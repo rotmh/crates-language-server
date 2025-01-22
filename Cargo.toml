@@ -1,0 +1,20 @@
+[package]
+name = "crates-language-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tower-lsp = "0.20"
+tokio = { version = "1.43", features = ["full"] }
+
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+cargo-util-schemas = "0.7"
+semver = "1"
+
+reqwest = "0.12"
+
+thiserror = "2"
+anyhow = "1"
