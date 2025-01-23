@@ -4,3 +4,4 @@
 - [ ] Completion for some amount of the latest versions
 - [ ] Crate info on hover
 - [ ] Open `docs.rs` in the browser on `goto definition`
+- [ ] Code action to update crate version to latest

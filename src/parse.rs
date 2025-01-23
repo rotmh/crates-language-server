@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, str::FromStr};
 
 use cargo_util_schemas::manifest::{InheritableDependency, PackageName};
 use serde::Deserialize;
-use toml_edit::{ImDocument, Item};
-use tower_lsp::lsp_types;
+use toml_edit::{ImDocument, Item, Value};
+use tower_lsp::lsp_types::{self, Position};
 
-const DEPENDENCIES_KEY: &str = "dependencies";
+pub const DEPENDENCIES_KEY: &str = "dependencies";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -44,21 +44,61 @@ impl FromStr for Dependencies {
         Ok(Self {
             crates: dependencies
                 .into_iter()
-                .filter_map(|d| {
-                    deps.get_key_value(d.0.as_str())
-                        .and_then(|(k, _)| k.span())
-                        .map(|r| (d.0, (range_to_positions(s, r), d.1)))
+                .filter_map(|(name, dep)| {
+                    deps.get_key_value(name.as_str())
+                        .and_then(|(key, _)| key.span())
+                        .map(|rng| (name, (range_to_positions(s, rng), dep)))
                 })
                 .collect(),
         })
     }
 }
 
+/// If the pos is inside the dependecy's version string, returns the
+/// dependency name. Otherwise, returns [`None`].
+pub fn pos_in_dependency_version(s: &str, pos: Position) -> Option<String> {
+    let doc = ImDocument::from_str(s).ok()?;
+
+    doc.get(DEPENDENCIES_KEY)?
+        .as_table()?
+        .iter()
+        .find(|(_, value)| pos_in_version_field(s, pos, dbg!(value)))
+        .map(|(name, _)| name.to_owned())
+}
+
+fn pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
+    if let Item::Value(value) = value {
+        let version_rng = match value {
+            Value::String(version) if let Some(rng) = version.span() => Some(rng),
+            Value::InlineTable(table)
+                if let Some(Value::String(version)) = table.get("version")
+                    && let Some(rng) = version.span() =>
+            {
+                Some(rng)
+            }
+            _ => None,
+        };
+        version_rng.is_some_and(|rng| is_pos_in_range(s, rng, pos))
+    } else {
+        false
+    }
+}
+
+fn is_pos_in_range(s: &str, rng: std::ops::Range<usize>, pos: Position) -> bool {
+    eprintln!("trying to determine whether the pos: {pos:#?} in the range {rng:#?}");
+
+    let positions = range_to_positions(s, rng);
+    let (start, end) = (positions.start, positions.end);
+    !(!(start.line..=end.line).contains(&pos.line)
+        || (start.line == pos.line && pos.character < start.character)
+        || (end.line == pos.line && pos.character > end.character))
+}
+
 fn line_of_idx(s: &str, idx: usize) -> (usize, usize) {
     s.chars()
         .enumerate()
         .fold((0, 0), |(line, line_pos), (i, c)| {
-            // FIXME: stuff with \r
+            // FIXME: stuff with '\r'
             if c == '\n' && i < idx {
                 (line + 1, i)
             } else {
@@ -88,14 +128,17 @@ fn range_to_positions(s: &str, r: std::ops::Range<usize>) -> lsp_types::Range {
 
 #[cfg(test)]
 mod tests {
-    use cargo_util_schemas::manifest::TomlDependency;
+    use cargo_util_schemas::manifest::{TomlDependency, TomlDetailedDependency};
+    use indoc::indoc;
 
     use super::*;
 
     #[test]
     fn parse_dependencies() {
-        let s = r#"[dependencies]
-serde = "1""#;
+        let s = indoc! {r#"
+            [dependencies]
+            serde = { version = "1" }
+        "#};
 
         let deps = Dependencies::from_str(s).unwrap();
         let serde = deps.crates.get("serde").unwrap();
@@ -106,16 +149,19 @@ serde = "1""#;
         });
         assert!(matches!(
             &serde.1,
-            InheritableDependency::Value(TomlDependency::Simple(version)) if version == "1"
+            InheritableDependency::Value(TomlDependency::Detailed(
+                TomlDetailedDependency { version: Some(version), .. }
+            )) if version == "1"
         ));
     }
 
     #[test]
     fn test_range_to_positions() {
-        let s = r"12345678
-480
-3
-        ";
+        let s = indoc! {r#"
+            12345678
+            480
+            3
+        "#};
 
         // NOTE: the positions are zero-indexed and the end is exclusive
 

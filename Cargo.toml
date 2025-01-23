@@ -22,3 +22,5 @@ url = "2.5"
 
 thiserror = "2"
 anyhow = "1"
+
+indoc = "2"
