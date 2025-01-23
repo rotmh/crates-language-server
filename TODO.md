@@ -1,3 +1,6 @@
-[ ] cache crates' information
-[ ] support dependencies from sections other than `dependencies`
-[ ] support fetching from `git` when the dependency is from `git` and not `crates.io`
+- [ ] Cache crates' information
+- [ ] Support dependencies from sections other than `dependencies`
+- [ ] Support fetching from `git` when the dependency is from `git` and not `crates.io`
+- [ ] Completion for some amount of the latest versions
+- [ ] Crate info on hover
+- [ ] Open `docs.rs` in the browser on `goto definition`
