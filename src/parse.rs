@@ -54,6 +54,37 @@ impl FromStr for Dependencies {
     }
 }
 
+/// If the pos is inside a dependecy's name, returns the the name.
+/// Otherwise, returns [`None`].
+///
+/// # Examples
+///
+/// ```
+/// # use crates_language_server::parse::pos_in_dependency_name;
+/// use tower_lsp::lsp_types::Position;
+///
+/// let s = r#"
+/// [dependencies]
+/// serde = "1"
+/// "#;
+/// let pos = Position::new(2, 2);
+///
+/// assert_eq!(pos_in_dependency_name(s, pos), Some("serde".to_owned()));
+/// ```
+pub fn pos_in_dependency_name(s: &str, pos: Position) -> Option<String> {
+    let doc = ImDocument::from_str(s).ok()?;
+
+    doc.get(DEPENDENCIES_KEY)?
+        .as_table()?
+        .get_values()
+        .iter()
+        .filter(|&(keys, _)| (keys.len() == 1))
+        .map(|(keys, _)| keys.first().unwrap())
+        .filter_map(|name| name.span().map(|rng| (name.to_string(), rng)))
+        .find(|(_, rng)| is_pos_in_range(s, rng.to_owned(), pos))
+        .map(|(name, _)| name)
+}
+
 /// If the pos is inside the dependecy's version string, returns the
 /// dependency name. Otherwise, returns [`None`].
 pub fn pos_in_dependency_version(s: &str, pos: Position) -> Option<String> {
@@ -62,7 +93,7 @@ pub fn pos_in_dependency_version(s: &str, pos: Position) -> Option<String> {
     doc.get(DEPENDENCIES_KEY)?
         .as_table()?
         .iter()
-        .find(|(_, value)| pos_in_version_field(s, pos, dbg!(value)))
+        .find(|(_, value)| pos_in_version_field(s, pos, value))
         .map(|(name, _)| name.to_owned())
 }
 
@@ -78,7 +109,7 @@ fn pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
             }
             _ => None,
         };
-        version_rng.is_some_and(|rng| is_pos_in_range(s, rng, pos))
+        version_rng.is_some_and(|rng| is_pos_in_range(s, rng.to_owned(), pos))
     } else {
         false
     }

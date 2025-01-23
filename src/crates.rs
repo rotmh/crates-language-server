@@ -4,6 +4,8 @@ use serde::Deserialize;
 
 const REGISTRY_URL: &str = "https://index.crates.io";
 
+pub const DOCS_RS_URL: &str = "https://docs.rs";
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("failed to fetch `{url}`")]
@@ -177,6 +179,19 @@ fn return_false() -> bool {
 
 fn return_1() -> u32 {
     1
+}
+
+/// Checks if a crate is available through the `crates.io` index.
+///
+/// This function is meant for checking whether a crate name is a valid
+/// name of an existing crate.
+pub async fn is_availabe(name: &str) -> bool {
+    let path = index_path(name);
+    let url = format!("{REGISTRY_URL}/{path}");
+
+    reqwest::get(&url)
+        .await
+        .is_ok_and(|res| res.status().is_success())
 }
 
 pub async fn fetch(name: &str) -> Result<Index> {

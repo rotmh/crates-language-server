@@ -1,7 +1,7 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use crate::{
-    crates,
+    crates::{self, DOCS_RS_URL},
     parse::{self, DEPENDENCIES_KEY, Dependencies},
 };
 use ropey::Rope;
@@ -12,8 +12,9 @@ use tower_lsp::{
     lsp_types::{
         CodeActionProviderCapability, CompletionItem, CompletionOptions, CompletionParams,
         CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-        DidOpenTextDocumentParams, ExecuteCommandOptions, InitializeParams, InitializeResult,
-        InitializedParams, OneOf, Position, ServerCapabilities, TextDocumentContentChangeEvent,
+        DidOpenTextDocumentParams, ExecuteCommandOptions, GotoDefinitionParams,
+        GotoDefinitionResponse, InitializeParams, InitializeResult, InitializedParams, OneOf,
+        Position, ServerCapabilities, ShowDocumentParams, TextDocumentContentChangeEvent,
         TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceFoldersServerCapabilities,
         WorkspaceServerCapabilities,
     },
@@ -130,31 +131,31 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             server_info: None,
             capabilities: ServerCapabilities {
+                // We want to keep a synced version of the documents
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     // sync the document by sending changes using the
                     // `didChagne` notification.
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
+
+                // We provide completions events
                 completion_provider: Some(CompletionOptions {
-                    resolve_provider: Some(false),
+                    // trigger completion event when the user hits `"`
                     trigger_characters: Some(vec!['\"'.to_string()]),
-                    work_done_progress_options: Default::default(),
-                    all_commit_characters: None,
+                    resolve_provider: Some(false),
                     ..Default::default()
                 }),
-                inlay_hint_provider: Some(OneOf::Left(true)),
+
+                // We provide inlay hints
+                //
+                // TODO: uncomment when implemented
+                // inlay_hint_provider: Some(OneOf::Left(true)),
+
+                // We provide code action events
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-                execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["dummy.do_something".to_string()],
-                    work_done_progress_options: Default::default(),
-                }),
-                workspace: Some(WorkspaceServerCapabilities {
-                    workspace_folders: Some(WorkspaceFoldersServerCapabilities {
-                        supported: Some(true),
-                        change_notifications: Some(OneOf::Left(true)),
-                    }),
-                    file_operations: None,
-                }),
+
+                // We provide goto definition events
+                definition_provider: Some(OneOf::Left(true)),
 
                 ..ServerCapabilities::default()
             },
@@ -181,10 +182,10 @@ impl LanguageServer for Backend {
         &self,
         params: CompletionParams,
     ) -> jsonrpc::Result<Option<CompletionResponse>> {
-        let uri = &params.text_document_position.text_document.uri;
+        let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
         let name = self
-            .doc(uri)
+            .doc(&uri)
             .await
             .and_then(|doc| parse::pos_in_dependency_version(&doc, pos));
         let comps = if let Some(name) = name {
@@ -198,6 +199,36 @@ impl LanguageServer for Backend {
         };
 
         Ok(comps)
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> jsonrpc::Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+        let name = self
+            .doc(&uri)
+            .await
+            .and_then(|doc| parse::pos_in_dependency_name(&doc, pos));
+
+        if let Some(name) = name
+            && crates::is_availabe(&name).await
+        {
+            let crate_docs_url = format!("{DOCS_RS_URL}/crate/{name}");
+            let uri = Url::parse(&crate_docs_url).expect("url string should be valid");
+            self.client
+                .show_document(ShowDocumentParams {
+                    uri,
+                    external: Some(true),
+                    take_focus: None,
+                    selection: None,
+                })
+                .await
+                .ok();
+        }
+
+        Ok(None)
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
