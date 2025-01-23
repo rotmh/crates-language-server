@@ -35,7 +35,7 @@ impl Index {
     }
 
     pub fn latest(&self) -> &Entry {
-        // FIXME: don't use all thses `.unwrap()`s
+        // FIXME: don't use all these `.unwrap()`s
         self.entries
             .iter()
             .max_by(|a, b| {

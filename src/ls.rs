@@ -20,6 +20,31 @@ use tower_lsp::{
 };
 use url::Url;
 
+fn completions(index: crates::Index) -> Vec<CompletionItem> {
+    let Ok(latest) = semver::Version::parse(&index.latest().vers) else {
+        return Vec::new();
+    };
+
+    let mut comps = vec![
+        CompletionItem::new_simple(
+            format!("{}.{}.{}", latest.major, latest.minor, latest.patch),
+            "patch".to_owned(),
+        ),
+        CompletionItem::new_simple(
+            format!("{}.{}", latest.major, latest.minor),
+            "minor".to_owned(),
+        ),
+        CompletionItem::new_simple(format!("{}", latest.major), "major".to_owned()),
+    ];
+
+    if !(latest.pre.is_empty() && latest.build.is_empty()) {
+        let full = CompletionItem::new_simple(latest.to_string(), "latest".to_owned());
+        comps.insert(0, full);
+    }
+
+    comps
+}
+
 #[derive(Debug)]
 pub struct Backend {
     client: Client,
@@ -162,18 +187,17 @@ impl LanguageServer for Backend {
             .doc(uri)
             .await
             .and_then(|doc| parse::pos_in_dependency_version(&doc, pos));
-        let completions = if let Some(name) = name {
-            crates::fetch(&name).await.ok().map(|index| {
-                let label = index.latest().vers.clone();
-                let detail = format!("{name}\n\n`@latest`");
-                let completion = CompletionItem::new_simple(label, detail);
-                CompletionResponse::Array(vec![completion])
-            })
+        let comps = if let Some(name) = name {
+            crates::fetch(&name)
+                .await
+                .ok()
+                .map(completions)
+                .map(CompletionResponse::Array)
         } else {
             None
         };
 
-        Ok(completions)
+        Ok(comps)
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {
