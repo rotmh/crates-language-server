@@ -7,7 +7,10 @@ edition = "2024"
 tower-lsp = "0.20"
 tokio = { version = "1.43", features = ["full"] }
 
+ropey = "1.6"
+
 toml = "0.8"
+toml_edit = { version = "0.22", features = ["parse"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -15,6 +18,7 @@ cargo-util-schemas = "0.7"
 semver = "1"
 
 reqwest = "0.12"
+url = "2.5"
 
 thiserror = "2"
 anyhow = "1"
