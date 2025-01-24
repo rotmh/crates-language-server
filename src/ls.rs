@@ -2,44 +2,42 @@ use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use crate::{
     crates::{self, DOCS_RS_URL},
-    parse::{self, DEPENDENCIES_KEY, Dependencies},
+    parse::{self, Dependencies},
 };
 use ropey::Rope;
 use tokio::sync::RwLock;
-use toml_edit::{ImDocument, Item, Table, Value};
 use tower_lsp::{
     Client, LanguageServer, jsonrpc,
     lsp_types::{
         CodeActionProviderCapability, CompletionItem, CompletionOptions, CompletionParams,
         CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-        DidOpenTextDocumentParams, ExecuteCommandOptions, GotoDefinitionParams,
-        GotoDefinitionResponse, InitializeParams, InitializeResult, InitializedParams, MessageType,
-        OneOf, Position, ServerCapabilities, ShowDocumentParams, TextDocumentContentChangeEvent,
-        TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceFoldersServerCapabilities,
-        WorkspaceServerCapabilities,
+        DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, InitializeParams,
+        InitializeResult, InitializedParams, MessageType, OneOf, ServerCapabilities,
+        ShowDocumentParams, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
+        TextDocumentSyncKind,
     },
 };
 use url::Url;
 
-fn completions(index: crates::Index) -> Vec<CompletionItem> {
-    let Ok(latest) = semver::Version::parse(&index.latest().vers) else {
-        return Vec::new();
-    };
+fn completions(latest: crates::Latest) -> Vec<CompletionItem> {
+    let version = latest.version;
 
     let mut comps = vec![
         CompletionItem::new_simple(
-            format!("{}.{}.{}", latest.major, latest.minor, latest.patch),
+            format!("{}.{}.{}", version.major, version.minor, version.patch),
             "patch".to_owned(),
         ),
         CompletionItem::new_simple(
-            format!("{}.{}", latest.major, latest.minor),
+            format!("{}.{}", version.major, version.minor),
             "minor".to_owned(),
         ),
-        CompletionItem::new_simple(format!("{}", latest.major), "major".to_owned()),
+        CompletionItem::new_simple(format!("{}", version.major), "major".to_owned()),
     ];
 
-    if !(latest.pre.is_empty() && latest.build.is_empty()) {
-        let full = CompletionItem::new_simple(latest.to_string(), "latest".to_owned());
+    // this is often not the case, so it's not that bad the we are
+    // inserting here (which is O(N)).
+    if !(version.pre.is_empty() && version.build.is_empty()) {
+        let full = CompletionItem::new_simple(version.to_string(), "latest".to_owned());
         comps.insert(0, full);
     }
 
@@ -50,6 +48,7 @@ fn completions(index: crates::Index) -> Vec<CompletionItem> {
 pub struct Backend {
     client: Client,
     documents: Arc<RwLock<HashMap<Url, Rope>>>,
+    registry: crates::RegistryCache,
 }
 
 impl Backend {
@@ -57,6 +56,7 @@ impl Backend {
         Self {
             client,
             documents: Default::default(),
+            registry: Default::default(),
         }
     }
 
@@ -105,8 +105,8 @@ impl Backend {
         let mut diags = Vec::new();
 
         for (name, (range, _)) in dependencies.crates {
-            if let Ok(index) = crates::fetch(name.as_str()).await {
-                let message = index.latest().vers.clone();
+            if let Ok(latest) = self.registry.fetch(name.as_str()).await {
+                let message = latest.version.to_string();
                 diags.push(Diagnostic {
                     range,
                     severity: Some(DiagnosticSeverity::INFORMATION),
@@ -189,7 +189,8 @@ impl LanguageServer for Backend {
             .await
             .and_then(|doc| parse::pos_in_dependency_version(&doc, pos));
         let comps = if let Some(name) = name {
-            crates::fetch(&name)
+            self.registry
+                .fetch(&name)
                 .await
                 .ok()
                 .map(completions)
@@ -213,7 +214,7 @@ impl LanguageServer for Backend {
             .and_then(|doc| parse::pos_in_dependency_name(&doc, pos));
 
         if let Some(name) = name
-            && crates::is_availabe(&name).await
+            && self.registry.is_availabe(&name).await
         {
             let crate_docs_url = format!("{DOCS_RS_URL}/crate/{name}");
             let uri = Url::parse(&crate_docs_url).expect("url string should be valid");

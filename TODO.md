@@ -1,4 +1,4 @@
-- [ ] (BASIC) Cache crates information
+- [x] (BASIC) Cache crates information
 - [ ] (BASIC) Support dependencies from sections other than `dependencies`
 - [ ] (ADVANCED) Support fetching from `git` when the dependency is from `git` and not `crates.io`
 - [x] Completion for some amount of the latest versions

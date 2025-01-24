@@ -1,6 +1,11 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
+use reqwest::Response;
 use serde::Deserialize;
+use tokio::sync::Mutex;
 
 const REGISTRY_URL: &str = "https://index.crates.io";
 
@@ -14,26 +19,109 @@ pub enum Error {
     Parse { name: String },
 }
 
+/// A cache for a "latest" entry for crates.
+#[derive(Default, Debug)]
+pub struct RegistryCache {
+    crates: Arc<Mutex<HashMap<String, Latest>>>,
+    client: reqwest::Client,
+}
+
+impl RegistryCache {
+    async fn fetch_endpoint(&self, name: &str) -> Result<Response> {
+        let path = index_path(name);
+        let url = format!("{REGISTRY_URL}/{path}");
+
+        let res = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| Error::Request { url: url.clone() })?;
+
+        res.status()
+            .is_success()
+            .then_some(res)
+            .ok_or(Error::Request { url })
+    }
+
+    async fn fetch_index(&self, name: &str) -> Result<String> {
+        let res: Response = self.fetch_endpoint(name).await?;
+        res.text().await.map_err(|_| Error::Parse {
+            name: name.to_owned(),
+        })
+    }
+
+    /// Checks if a crate is available.
+    ///
+    /// This function is meant for checking whether a crate name is a valid
+    /// name of an existing crate.
+    pub async fn is_availabe(&self, name: &str) -> bool {
+        // we check the cache first, and then (if entry does not exist) we
+        // check the crates.io endpoint.
+        self.crates.lock().await.contains_key(name) || self.fetch_endpoint(name).await.is_ok()
+    }
+
+    pub async fn fetch(&self, name: &str) -> Result<Latest> {
+        if let Some(entry) = self.crates.lock().await.get(name) {
+            return Ok(entry.clone());
+        }
+        let entries = self
+            .fetch_index(name)
+            .await
+            .and_then(|body| Index::parse(name, &body))?
+            .entries;
+        let latest = entries
+            .last()
+            .expect("index should contain at least one entry");
+
+        let version = semver::Version::parse(&latest.vers).map_err(|_| Error::Parse {
+            name: name.to_owned(),
+        })?;
+        let features = latest.features.clone();
+
+        let latest = Latest {
+            description: "Not yet implemented".to_owned(),
+            version,
+            features,
+        };
+
+        self.crates
+            .lock()
+            .await
+            .insert(name.to_owned(), latest.clone());
+
+        Ok(latest)
+    }
+}
+
+// TODO: better name
+#[derive(Clone, Debug)]
+pub struct Latest {
+    pub description: String,
+    pub version: semver::Version,
+    pub features: Option<BTreeMap<String, Vec<String>>>,
+}
+
 #[derive(Debug)]
 pub struct Index {
-    pub name: String,
     pub entries: Vec<Entry>,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Index {
-    pub fn parse(name: String, json_entries: &str) -> Result<Self> {
+    pub fn parse(name: &str, json_entries: &str) -> Result<Self> {
         // OPTIMIZE: is counting the lines here worth it?
         let mut entries = Vec::with_capacity(json_entries.lines().count());
 
         for line in json_entries.lines() {
-            let entry =
-                serde_json::from_str(line).map_err(|_| Error::Parse { name: name.clone() })?;
+            let entry = serde_json::from_str(line).map_err(|_| Error::Parse {
+                name: name.to_owned(),
+            })?;
             entries.push(entry);
         }
 
-        Ok(Self { name, entries })
+        Ok(Self { entries })
     }
 
     pub fn latest(&self) -> &Entry {
@@ -181,36 +269,6 @@ fn return_1() -> u32 {
     1
 }
 
-/// Checks if a crate is available through the `crates.io` index.
-///
-/// This function is meant for checking whether a crate name is a valid
-/// name of an existing crate.
-pub async fn is_availabe(name: &str) -> bool {
-    let path = index_path(name);
-    let url = format!("{REGISTRY_URL}/{path}");
-
-    reqwest::get(&url)
-        .await
-        .is_ok_and(|res| res.status().is_success())
-}
-
-pub async fn fetch(name: &str) -> Result<Index> {
-    let path = index_path(name);
-    let url = format!("{REGISTRY_URL}/{path}");
-
-    // TODO: use a client instance.
-    let body = reqwest::get(&url)
-        .await
-        .map_err(|_| Error::Request { url: url.clone() })?
-        .text()
-        .await
-        .map_err(|_| Error::Parse {
-            name: name.to_owned(),
-        })?;
-
-    Index::parse(name.to_owned(), &body)
-}
-
 /// Get the path to the index file of the crate according to [Cargo's docs].
 ///
 /// # Panics
@@ -259,12 +317,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_working_fetch() {
-        fetch("base64").await.unwrap();
+        RegistryCache::default().fetch("base64").await.unwrap();
     }
 
     #[tokio::test]
     async fn test_failing_fetch() {
-        fetch("my_name_is_inigo_montoya_and_there_is_no_way_there_is_a_crate_with_this_name")
+        RegistryCache::default()
+            .fetch("my_name_is_inigo_montoya_and_there_is_no_way_there_is_a_crate_with_this_name")
             .await
             .unwrap_err();
     }
