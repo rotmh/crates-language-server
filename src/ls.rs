@@ -11,8 +11,9 @@ use tower_lsp::{
     lsp_types::{
         CodeActionProviderCapability, CompletionItem, CompletionOptions, CompletionParams,
         CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-        DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, InitializeParams,
-        InitializeResult, InitializedParams, MessageType, OneOf, ServerCapabilities,
+        DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+        HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+        InitializedParams, MarkupContent, MarkupKind, MessageType, OneOf, ServerCapabilities,
         ShowDocumentParams, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
         TextDocumentSyncKind,
     },
@@ -146,6 +147,9 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
 
+                // We provide hover events
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+
                 // We provide inlay hints
                 //
                 // TODO: uncomment when implemented
@@ -200,6 +204,29 @@ impl LanguageServer for Backend {
         };
 
         Ok(comps)
+    }
+
+    async fn hover(&self, params: HoverParams) -> jsonrpc::Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+        let name = self
+            .doc(&uri)
+            .await
+            .and_then(|doc| parse::pos_in_dependency_name(&doc, pos));
+
+        if let Some(name) = name
+            && let Ok(latest) = self.registry.fetch(&name).await
+        {
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::PlainText,
+                    value: latest.description,
+                }),
+                range: None,
+            }));
+        }
+
+        Ok(None)
     }
 
     async fn goto_definition(
