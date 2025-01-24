@@ -13,8 +13,8 @@ use tower_lsp::{
         CodeActionProviderCapability, CompletionItem, CompletionOptions, CompletionParams,
         CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
         DidOpenTextDocumentParams, ExecuteCommandOptions, GotoDefinitionParams,
-        GotoDefinitionResponse, InitializeParams, InitializeResult, InitializedParams, OneOf,
-        Position, ServerCapabilities, ShowDocumentParams, TextDocumentContentChangeEvent,
+        GotoDefinitionResponse, InitializeParams, InitializeResult, InitializedParams, MessageType,
+        OneOf, Position, ServerCapabilities, ShowDocumentParams, TextDocumentContentChangeEvent,
         TextDocumentSyncCapability, TextDocumentSyncKind, WorkspaceFoldersServerCapabilities,
         WorkspaceServerCapabilities,
     },
@@ -217,7 +217,8 @@ impl LanguageServer for Backend {
         {
             let crate_docs_url = format!("{DOCS_RS_URL}/crate/{name}");
             let uri = Url::parse(&crate_docs_url).expect("url string should be valid");
-            self.client
+            if self
+                .client
                 .show_document(ShowDocumentParams {
                     uri,
                     external: Some(true),
@@ -225,7 +226,15 @@ impl LanguageServer for Backend {
                     selection: None,
                 })
                 .await
-                .ok();
+                .is_ok()
+            {
+                self.client
+                    .show_message(
+                        MessageType::INFO,
+                        format!("opened docs for `{name}` in your browser"),
+                    )
+                    .await;
+            }
         }
 
         Ok(None)
