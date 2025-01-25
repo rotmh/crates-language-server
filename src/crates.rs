@@ -146,7 +146,11 @@ impl RegistryCache {
         let version = semver::Version::parse(&latest.vers).map_err(|_| Error::Parse {
             name: name.to_owned(),
         })?;
-        let features = latest.features.clone();
+        let features = if latest.v == 2 {
+            latest.features2.clone()
+        } else {
+            latest.features.clone()
+        };
 
         let latest = Latest {
             description: None,

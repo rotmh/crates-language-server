@@ -85,19 +85,34 @@ pub fn pos_in_dependency_name(s: &str, pos: Position) -> Option<String> {
         .map(|(name, _)| name)
 }
 
+/// If the pos is inside the dependecy's features array, returns the
+/// dependency name. Otherwise, returns [`None`].
+#[inline]
+pub fn pos_in_dependency_features(s: &str, pos: Position) -> Option<String> {
+    pos_in_dependency(s, pos, is_pos_in_features_field)
+}
+
 /// If the pos is inside the dependecy's version string, returns the
 /// dependency name. Otherwise, returns [`None`].
+#[inline]
 pub fn pos_in_dependency_version(s: &str, pos: Position) -> Option<String> {
+    pos_in_dependency(s, pos, is_pos_in_version_field)
+}
+
+fn pos_in_dependency<F>(s: &str, pos: Position, predicate: F) -> Option<String>
+where
+    F: Fn(&str, Position, &Item) -> bool,
+{
     let doc = ImDocument::from_str(s).ok()?;
 
     doc.get(DEPENDENCIES_KEY)?
         .as_table()?
         .iter()
-        .find(|(_, value)| pos_in_version_field(s, pos, value))
+        .find(|(_, value)| predicate(s, pos, value))
         .map(|(name, _)| name.to_owned())
 }
 
-fn pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
+fn is_pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
     if let Item::Value(value) = value {
         let version_rng = match value {
             Value::String(version) if let Some(rng) = version.span() => Some(rng),
@@ -110,6 +125,19 @@ fn pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
             _ => None,
         };
         version_rng.is_some_and(|rng| is_pos_in_range(s, rng.to_owned(), pos))
+    } else {
+        false
+    }
+}
+
+fn is_pos_in_features_field(s: &str, pos: Position, value: &Item) -> bool {
+    if let Item::Value(Value::InlineTable(table)) = value
+        && let Some(Value::Array(features)) = table.get("features")
+        && features.iter().any(|item| {
+            item.is_str() && item.span().is_some_and(|rng| is_pos_in_range(s, rng, pos))
+        })
+    {
+        true
     } else {
         false
     }

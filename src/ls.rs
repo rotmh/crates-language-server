@@ -20,7 +20,7 @@ use tower_lsp::{
 };
 use url::Url;
 
-fn completions(latest: crates::Latest) -> Vec<CompletionItem> {
+fn version_completions(latest: crates::Latest) -> Vec<CompletionItem> {
     let version = latest.version;
 
     let mut comps = vec![
@@ -43,6 +43,17 @@ fn completions(latest: crates::Latest) -> Vec<CompletionItem> {
     }
 
     comps
+}
+
+fn features_completions(latest: crates::Latest) -> Vec<CompletionItem> {
+    latest
+        .features
+        .map(|f| {
+            f.into_keys()
+                .map(|name| CompletionItem::new_simple(name, "todo".to_owned()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Debug)]
@@ -124,6 +135,18 @@ impl Backend {
 
         self.client.publish_diagnostics(uri, diags, None).await;
     }
+
+    async fn generate_completion<F>(&self, name: &str, f: F) -> Option<CompletionResponse>
+    where
+        F: Fn(crates::Latest) -> Vec<CompletionItem>,
+    {
+        self.registry
+            .fetch(name)
+            .await
+            .ok()
+            .map(f)
+            .map(CompletionResponse::Array)
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -188,17 +211,13 @@ impl LanguageServer for Backend {
     ) -> jsonrpc::Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
-        let name = self
-            .doc(&uri)
-            .await
-            .and_then(|doc| parse::pos_in_dependency_version(&doc, pos));
-        let comps = if let Some(name) = name {
-            self.registry
-                .fetch(&name)
-                .await
-                .ok()
-                .map(completions)
-                .map(CompletionResponse::Array)
+        let Some(doc) = self.doc(&uri).await else {
+            return Ok(None);
+        };
+        let comps = if let Some(name) = parse::pos_in_dependency_version(&doc, pos) {
+            self.generate_completion(&name, version_completions).await
+        } else if let Some(name) = parse::pos_in_dependency_features(&doc, pos) {
+            self.generate_completion(&name, features_completions).await
         } else {
             None
         };
