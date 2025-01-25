@@ -9,13 +9,15 @@ use tokio::sync::RwLock;
 use tower_lsp::{
     Client, LanguageServer, jsonrpc,
     lsp_types::{
-        CodeActionProviderCapability, CompletionItem, CompletionOptions, CompletionParams,
+        self, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
+        CodeActionResponse, Command, CompletionItem, CompletionOptions, CompletionParams,
         CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-        DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-        HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-        InitializedParams, MarkupContent, MarkupKind, MessageType, OneOf, ServerCapabilities,
-        ShowDocumentParams, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
-        TextDocumentSyncKind,
+        DidOpenTextDocumentParams, ExecuteCommandOptions, ExecuteCommandParams,
+        GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+        MarkupContent, MarkupKind, MessageType, OneOf, ServerCapabilities, ShowDocumentParams,
+        TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+        WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 use url::Url;
@@ -184,6 +186,13 @@ impl LanguageServer for Backend {
                 // We provide goto definition events
                 definition_provider: Some(OneOf::Left(true)),
 
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec!["latest_version".to_owned()],
+                    work_done_progress_options: WorkDoneProgressOptions {
+                        work_done_progress: None,
+                    },
+                }),
+
                 ..ServerCapabilities::default()
             },
         })
@@ -287,6 +296,54 @@ impl LanguageServer for Backend {
         }
 
         Ok(None)
+    }
+
+    async fn code_action(
+        &self,
+        params: CodeActionParams,
+    ) -> jsonrpc::Result<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri;
+        let lsp_types::Range { start, end } = params.range;
+        let name = self.doc(&uri).await.and_then(|doc| {
+            parse::pos_in_dependency_name(&doc, start)
+                .or_else(|| parse::pos_in_dependency_name(&doc, end))
+        });
+
+        let actions = name.map(|name| {
+            let command = CodeActionOrCommand::Command(Command::new(
+                "Latest version".to_owned(),
+                "latest_version".to_owned(),
+                Some(vec![
+                    serde_json::Value::String(name),
+                    serde_json::Value::String(uri.into()),
+                ]),
+            ));
+            vec![command]
+        });
+
+        Ok(actions)
+    }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> jsonrpc::Result<Option<serde_json::Value>> {
+        if params.command == "latest_version"
+            && let Some(serde_json::Value::String(name)) = params.arguments.first()
+            && let Some(serde_json::Value::String(uri)) = params.arguments.get(1)
+            && let Ok(uri) = Url::parse(uri)
+            && let Some(doc) = self.doc(&uri).await
+            && let Some(rng) = parse::version_range(&doc, name)
+            && let Ok(latest) = self.registry.fetch(name).await
+        {
+            let range = parse::range_to_positions(&doc, rng);
+            let change = TextEdit::new(range, format!("\"{}\"", latest.version));
+            let changes = WorkspaceEdit::new(std::iter::once((uri, vec![change])).collect());
+            let _ = self.client.apply_edit(changes).await;
+            Ok(None)
+        } else {
+            Err(jsonrpc::Error::invalid_request())
+        }
     }
 
     async fn shutdown(&self) -> jsonrpc::Result<()> {

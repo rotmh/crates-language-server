@@ -4,5 +4,5 @@
 - [x] Completion for some amount of the latest versions
 - [x] Crate info on hover (Q: how to get the info? A: crates.io API, though it requires rate limiting)
 - [x] Open `docs.rs` in the browser on `goto definition`
-- [ ] Code action to update crate version to latest
+- [x] Code action to update crate version to latest
 - [x] Completion for features

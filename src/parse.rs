@@ -112,9 +112,19 @@ where
         .map(|(name, _)| name.to_owned())
 }
 
-fn is_pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
+pub fn version_range(s: &str, name: &str) -> Option<std::ops::Range<usize>> {
+    let doc = ImDocument::from_str(s).ok()?;
+
+    doc.get(DEPENDENCIES_KEY)?
+        .as_table()?
+        .iter()
+        .find(|&(key, _)| key == name)
+        .and_then(|(_, value)| version_field_rng(value))
+}
+
+fn version_field_rng(value: &Item) -> Option<std::ops::Range<usize>> {
     if let Item::Value(value) = value {
-        let version_rng = match value {
+        match value {
             Value::String(version) if let Some(rng) = version.span() => Some(rng),
             Value::InlineTable(table)
                 if let Some(Value::String(version)) = table.get("version")
@@ -123,11 +133,14 @@ fn is_pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
                 Some(rng)
             }
             _ => None,
-        };
-        version_rng.is_some_and(|rng| is_pos_in_range(s, rng.to_owned(), pos))
+        }
     } else {
-        false
+        None
     }
+}
+
+fn is_pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
+    version_field_rng(value).is_some_and(|rng| is_pos_in_range(s, rng, pos))
 }
 
 fn is_pos_in_features_field(s: &str, pos: Position, value: &Item) -> bool {
@@ -176,7 +189,7 @@ fn idx_to_position(s: &str, idx: usize) -> lsp_types::Position {
     }
 }
 
-fn range_to_positions(s: &str, r: std::ops::Range<usize>) -> lsp_types::Range {
+pub fn range_to_positions(s: &str, r: std::ops::Range<usize>) -> lsp_types::Range {
     lsp_types::Range {
         start: idx_to_position(s, r.start),
         end: idx_to_position(s, r.end),
