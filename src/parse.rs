@@ -177,7 +177,7 @@ fn line_of_idx(s: &str, idx: usize) -> (usize, usize) {
         })
 }
 
-fn idx_to_position(s: &str, idx: usize) -> lsp_types::Position {
+pub fn idx_to_position(s: &str, idx: usize) -> lsp_types::Position {
     let (line, line_idx) = line_of_idx(s, idx);
     lsp_types::Position {
         line: line as u32,

@@ -14,10 +14,11 @@ use tower_lsp::{
         CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
         DidOpenTextDocumentParams, ExecuteCommandOptions, ExecuteCommandParams,
         GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
-        MarkupContent, MarkupKind, MessageType, OneOf, ServerCapabilities, ShowDocumentParams,
-        TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-        WorkDoneProgressOptions, WorkspaceEdit,
+        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
+        InlayHintLabel, InlayHintParams, InlayHintTooltip, MarkupContent, MarkupKind, MessageType,
+        OneOf, ServerCapabilities, ShowDocumentParams, TextDocumentContentChangeEvent,
+        TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, WorkDoneProgressOptions,
+        WorkspaceEdit,
     },
 };
 use url::Url;
@@ -119,7 +120,11 @@ impl Backend {
         let mut diags = Vec::new();
 
         for (name, (range, _)) in dependencies.crates {
-            if let Ok(latest) = self.registry.fetch(name.as_str()).await {
+            if let Ok(latest) = self.registry.fetch(name.as_str()).await
+                && let Some(doc) = self.doc(&uri).await
+                && let Some(rng) = parse::version_range(&doc, &name)
+            {
+                let range = parse::range_to_positions(&doc, rng);
                 let message = latest.version.to_string();
                 diags.push(Diagnostic {
                     range,
@@ -177,7 +182,7 @@ impl LanguageServer for Backend {
 
                 // We provide inlay hints
                 //
-                // TODO: uncomment when implemented
+                // TODO: uncomment
                 // inlay_hint_provider: Some(OneOf::Left(true)),
 
                 // We provide code action events
@@ -212,6 +217,39 @@ impl LanguageServer for Backend {
         self.apply_changes(&params.text_document.uri, params.content_changes)
             .await;
         self.on_change(params.text_document.uri).await;
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> jsonrpc::Result<Option<Vec<InlayHint>>> {
+        let Ok(dependencies) = self.parse_dependencies(&params.text_document.uri).await else {
+            return Ok(None);
+        };
+
+        // OPTIMIZE: maybe address params.range?
+
+        // OPTIMIZE: maybe the range in the parse_dependencies isn't needed?
+
+        let mut hints = Vec::new();
+
+        for (name, (_, _)) in dependencies.crates {
+            if let Ok(latest) = self.registry.fetch(name.as_str()).await
+                && let Some(doc) = self.doc(&params.text_document.uri).await
+                && let Some(rng) = parse::version_range(&doc, &name)
+            {
+                let pos = parse::idx_to_position(&doc, rng.start);
+                hints.push(InlayHint {
+                    position: pos,
+                    label: InlayHintLabel::String(format!("({})", latest.version)),
+                    kind: None,
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(true),
+                    padding_right: Some(true),
+                    data: None,
+                });
+            }
+        }
+
+        Ok(Some(hints))
     }
 
     async fn completion(
