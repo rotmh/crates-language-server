@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use reqwest::Response;
@@ -8,6 +9,7 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 
 const REGISTRY_URL: &str = "https://index.crates.io";
+const API_URL: &str = "https://crates.io/api/v1/crates";
 
 pub const DOCS_RS_URL: &str = "https://docs.rs";
 
@@ -20,34 +22,87 @@ pub enum Error {
 }
 
 /// A cache for a "latest" entry for crates.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct RegistryCache {
     crates: Arc<Mutex<HashMap<String, Latest>>>,
     client: reqwest::Client,
+    last_api_request: Arc<Mutex<Instant>>,
 }
 
 impl RegistryCache {
-    async fn fetch_endpoint(&self, name: &str) -> Result<Response> {
-        let path = index_path(name);
-        let url = format!("{REGISTRY_URL}/{path}");
+    pub fn new() -> Self {
+        Self {
+            crates: Arc::new(Mutex::new(HashMap::new())),
+            client: reqwest::ClientBuilder::new()
+                .user_agent("crates-language-server (github.com/rotmh)")
+                .build()
+                .unwrap_or_default(),
+            last_api_request: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
 
+    /// Fetch description only if 1 minute passed since last API request.
+    ///
+    /// This rate limiting is required because it's one of [`crates.io`'s limits]:
+    ///
+    /// * "A maximum of 1 request per second"
+    ///
+    /// [`crates.io`'s limits]: https://crates.io/data-access#api
+    async fn fetch_description_rated(&self, name: &str) -> Option<String> {
+        let last_req = *self.last_api_request.lock().await;
+        let since_last_req = Instant::now().duration_since(last_req);
+
+        if since_last_req > Duration::from_secs(1) {
+            *self.last_api_request.lock().await = Instant::now();
+            self.fetch_description(name).await.ok()
+        } else {
+            None
+        }
+    }
+
+    async fn fetch_description(&self, name: &str) -> Result<String> {
+        #[derive(Debug, Deserialize)]
+        struct ApiResponse {
+            #[serde(rename = "crate")]
+            krate: Krate,
+        }
+        #[derive(Debug, Deserialize)]
+        struct Krate {
+            description: String,
+        }
+
+        self.fetch_content(&api_url(name))
+            .await
+            .and_then(|body| {
+                serde_json::from_str(&body).map_err(|_| Error::Parse {
+                    name: name.to_owned(),
+                })
+            })
+            .map(|res: ApiResponse| res.krate.description)
+    }
+
+    async fn fetch_endpoint(&self, url: &str) -> Result<Response> {
         let res = self
             .client
-            .get(&url)
+            .get(url)
             .send()
             .await
-            .map_err(|_| Error::Request { url: url.clone() })?;
+            .map_err(|_| Error::Request {
+                url: url.to_owned(),
+            })?;
 
         res.status()
             .is_success()
             .then_some(res)
-            .ok_or(Error::Request { url })
+            .ok_or(Error::Request {
+                url: url.to_owned(),
+            })
     }
 
-    async fn fetch_index(&self, name: &str) -> Result<String> {
-        let res: Response = self.fetch_endpoint(name).await?;
-        res.text().await.map_err(|_| Error::Parse {
-            name: name.to_owned(),
+    async fn fetch_content(&self, url: &str) -> Result<String> {
+        let res: Response = self.fetch_endpoint(url).await?;
+        res.text().await.map_err(|_| Error::Request {
+            url: url.to_owned(),
         })
     }
 
@@ -58,15 +113,29 @@ impl RegistryCache {
     pub async fn is_availabe(&self, name: &str) -> bool {
         // we check the cache first, and then (if entry does not exist) we
         // check the crates.io endpoint.
-        self.crates.lock().await.contains_key(name) || self.fetch_endpoint(name).await.is_ok()
+        self.crates.lock().await.contains_key(name)
+            || self.fetch_endpoint(&index_url(name)).await.is_ok()
     }
 
     pub async fn fetch(&self, name: &str) -> Result<Latest> {
-        if let Some(entry) = self.crates.lock().await.get(name) {
-            return Ok(entry.clone());
+        if let Some(entry) = self.crates.lock().await.get_mut(name) {
+            let description = if let Some(description) = &entry.description {
+                Some(description.to_owned())
+            } else {
+                let description = self.fetch_description_rated(name).await;
+                if let Some(description) = &description {
+                    entry.description = Some(description.to_owned());
+                }
+                description
+            };
+            return Ok(Latest {
+                version: entry.version.clone(),
+                features: entry.features.clone(),
+                description,
+            });
         }
         let entries = self
-            .fetch_index(name)
+            .fetch_content(&index_url(name))
             .await
             .and_then(|body| Index::parse(name, &body))?
             .entries;
@@ -80,7 +149,7 @@ impl RegistryCache {
         let features = latest.features.clone();
 
         let latest = Latest {
-            description: "Not yet implemented".to_owned(),
+            description: None,
             version,
             features,
         };
@@ -94,12 +163,18 @@ impl RegistryCache {
     }
 }
 
+impl Default for RegistryCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // TODO: better name
 #[derive(Clone, Debug)]
 pub struct Latest {
-    pub description: String,
     pub version: semver::Version,
     pub features: Option<BTreeMap<String, Vec<String>>>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug)]
@@ -276,7 +351,7 @@ fn return_1() -> u32 {
 /// The function will panic for empty names.
 ///
 /// [Cargo's docs]: https://doc.rust-lang.org/cargo/reference/registry-index.html#index-files
-fn index_path(name: &str) -> String {
+fn index_url(name: &str) -> String {
     // the lint is about comparing to zero, but here we check if it's larger
     // than zero, which is more idiomatic in this case than `.is_empty()`.
     #[allow(clippy::len_zero)]
@@ -284,7 +359,7 @@ fn index_path(name: &str) -> String {
         assert!(name.len() > 0);
     }
 
-    match name.len() {
+    let path = match name.len() {
         1 => format!("1/{}", name),
         2 => format!("2/{}", name),
         3 => {
@@ -299,7 +374,14 @@ fn index_path(name: &str) -> String {
             let second_two: &str = &name[2..4];
             format!("{}/{}/{}", first_two, second_two, name)
         }
-    }
+    };
+
+    format!("{REGISTRY_URL}/{path}")
+}
+
+#[inline]
+fn api_url(name: &str) -> String {
+    format!("{API_URL}/{name}")
 }
 
 #[cfg(test)]
@@ -307,22 +389,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_index_path() {
-        assert_eq!(index_path("a"), "1/a");
-        assert_eq!(index_path("ab"), "2/ab");
-        assert_eq!(index_path("abc"), "3/a/abc");
-        assert_eq!(index_path("abcd"), "ab/cd/abcd");
-        assert_eq!(index_path("cargo"), "ca/rg/cargo");
+    fn test_index_url() {
+        let prefix = format!("{REGISTRY_URL}/");
+
+        assert_eq!(index_url("a").strip_prefix(&prefix).unwrap(), "1/a");
+        assert_eq!(index_url("ab").strip_prefix(&prefix).unwrap(), "2/ab");
+        assert_eq!(index_url("abc").strip_prefix(&prefix).unwrap(), "3/a/abc");
+        assert_eq!(
+            index_url("abcd").strip_prefix(&prefix).unwrap(),
+            "ab/cd/abcd"
+        );
+        assert_eq!(
+            index_url("cargo").strip_prefix(&prefix).unwrap(),
+            "ca/rg/cargo"
+        );
     }
 
     #[tokio::test]
     async fn test_working_fetch() {
-        RegistryCache::default().fetch("base64").await.unwrap();
+        RegistryCache::new().fetch("base64").await.unwrap();
     }
 
     #[tokio::test]
     async fn test_failing_fetch() {
-        RegistryCache::default()
+        RegistryCache::new()
             .fetch("my_name_is_inigo_montoya_and_there_is_no_way_there_is_a_crate_with_this_name")
             .await
             .unwrap_err();

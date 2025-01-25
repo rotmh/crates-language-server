@@ -220,7 +220,9 @@ impl LanguageServer for Backend {
             return Ok(Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::PlainText,
-                    value: latest.description,
+                    value: latest
+                        .description
+                        .unwrap_or_else(|| "Did not fetch description yet".to_owned()),
                 }),
                 range: None,
             }));

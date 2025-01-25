@@ -2,6 +2,6 @@
 - [ ] (BASIC) Support dependencies from sections other than `dependencies`
 - [ ] (ADVANCED) Support fetching from `git` when the dependency is from `git` and not `crates.io`
 - [x] Completion for some amount of the latest versions
-- [ ] Crate info on hover (how to get the info?)
+- [x] Crate info on hover (Q: how to get the info? A: crates.io API, though it requires rate limiting)
 - [x] Open `docs.rs` in the browser on `goto definition`
 - [ ] Code action to update crate version to latest

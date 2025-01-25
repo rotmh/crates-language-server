@@ -116,8 +116,6 @@ fn pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
 }
 
 fn is_pos_in_range(s: &str, rng: std::ops::Range<usize>, pos: Position) -> bool {
-    eprintln!("trying to determine whether the pos: {pos:#?} in the range {rng:#?}");
-
     let positions = range_to_positions(s, rng);
     let (start, end) = (positions.start, positions.end);
     !(!(start.line..=end.line).contains(&pos.line)
