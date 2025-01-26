@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{cmp::Ordering, collections::HashMap, str::FromStr, sync::Arc};
 
 use crate::{
     crates::{self, DOCS_RS_URL},
@@ -14,11 +14,10 @@ use tower_lsp::{
         CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
         DidOpenTextDocumentParams, ExecuteCommandOptions, ExecuteCommandParams,
         GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, InlayHint,
-        InlayHintLabel, InlayHintParams, InlayHintTooltip, MarkupContent, MarkupKind, MessageType,
-        OneOf, ServerCapabilities, ShowDocumentParams, TextDocumentContentChangeEvent,
-        TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, WorkDoneProgressOptions,
-        WorkspaceEdit,
+        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+        MarkupContent, MarkupKind, MessageType, OneOf, ServerCapabilities, ShowDocumentParams,
+        TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+        WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 use url::Url;
@@ -119,24 +118,38 @@ impl Backend {
 
         let mut diags = Vec::new();
 
+        // NOTE: maybe we doesn't need `toml` and only `toml_edit`?
+
         for (name, (range, _)) in dependencies.crates {
             if let Ok(latest) = self.registry.fetch(name.as_str()).await
                 && let Some(doc) = self.doc(&uri).await
                 && let Some(rng) = parse::version_range(&doc, &name)
             {
-                let range = parse::range_to_positions(&doc, rng);
-                let message = latest.version.to_string();
-                diags.push(Diagnostic {
-                    range,
-                    severity: Some(DiagnosticSeverity::INFORMATION),
-                    code: None,
-                    code_description: None,
-                    source: None,
-                    message,
-                    related_information: None,
-                    tags: None,
-                    data: None,
-                });
+                let current_version = &doc[rng.clone()]
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .and_then(|v| semver::Version::parse(v).ok());
+                // we don't want to hint latest version, when the user already
+                // uses the latest in their manifest.
+                if current_version
+                    .as_ref()
+                    .is_some_and(|curr| curr.cmp_precedence(&latest.version) != Ordering::Equal)
+                    || current_version.is_none()
+                {
+                    let range = parse::range_to_positions(&doc, rng);
+                    let message = latest.version.to_string();
+                    diags.push(Diagnostic {
+                        range,
+                        severity: Some(DiagnosticSeverity::INFORMATION),
+                        code: None,
+                        code_description: None,
+                        source: None,
+                        message,
+                        related_information: None,
+                        tags: None,
+                        data: None,
+                    });
+                }
             }
         }
 
@@ -219,39 +232,6 @@ impl LanguageServer for Backend {
         self.on_change(params.text_document.uri).await;
     }
 
-    async fn inlay_hint(&self, params: InlayHintParams) -> jsonrpc::Result<Option<Vec<InlayHint>>> {
-        let Ok(dependencies) = self.parse_dependencies(&params.text_document.uri).await else {
-            return Ok(None);
-        };
-
-        // OPTIMIZE: maybe address params.range?
-
-        // OPTIMIZE: maybe the range in the parse_dependencies isn't needed?
-
-        let mut hints = Vec::new();
-
-        for (name, (_, _)) in dependencies.crates {
-            if let Ok(latest) = self.registry.fetch(name.as_str()).await
-                && let Some(doc) = self.doc(&params.text_document.uri).await
-                && let Some(rng) = parse::version_range(&doc, &name)
-            {
-                let pos = parse::idx_to_position(&doc, rng.start);
-                hints.push(InlayHint {
-                    position: pos,
-                    label: InlayHintLabel::String(format!("({})", latest.version)),
-                    kind: None,
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: Some(true),
-                    padding_right: Some(true),
-                    data: None,
-                });
-            }
-        }
-
-        Ok(Some(hints))
-    }
-
     async fn completion(
         &self,
         params: CompletionParams,
@@ -280,10 +260,10 @@ impl LanguageServer for Backend {
             .await
             .and_then(|doc| parse::pos_in_dependency_name(&doc, pos));
 
-        if let Some(name) = name
+        let hover = if let Some(name) = name
             && let Ok(latest) = self.registry.fetch(&name).await
         {
-            return Ok(Some(Hover {
+            Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::PlainText,
                     value: latest
@@ -291,10 +271,12 @@ impl LanguageServer for Backend {
                         .unwrap_or_else(|| "Did not fetch description yet".to_owned()),
                 }),
                 range: None,
-            }));
-        }
+            })
+        } else {
+            None
+        };
 
-        Ok(None)
+        Ok(hover)
     }
 
     async fn goto_definition(
@@ -342,24 +324,44 @@ impl LanguageServer for Backend {
     ) -> jsonrpc::Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
         let lsp_types::Range { start, end } = params.range;
-        let name = self.doc(&uri).await.and_then(|doc| {
-            parse::pos_in_dependency_name(&doc, start)
-                .or_else(|| parse::pos_in_dependency_name(&doc, end))
+        let doc = self.doc(&uri).await;
+        let name = doc.and_then(|doc| {
+            parse::pos_in_dependency_version(&doc, start)
+                .or_else(|| parse::pos_in_dependency_version(&doc, end))
         });
 
-        let actions = name.map(|name| {
-            let command = CodeActionOrCommand::Command(Command::new(
-                "Latest version".to_owned(),
-                "latest_version".to_owned(),
-                Some(vec![
-                    serde_json::Value::String(name),
-                    serde_json::Value::String(uri.into()),
-                ]),
-            ));
-            vec![command]
-        });
+        // TODO: resolve duplication from on_change
 
-        Ok(actions)
+        if let Some(doc) = self.doc(&uri).await
+            && let Some(name) = parse::pos_in_dependency_version(&doc, start)
+                .or_else(|| parse::pos_in_dependency_version(&doc, end))
+            && let Some(rng) = parse::version_range(&doc, &name)
+            && let Ok(latest) = self.registry.fetch(&name).await
+        {
+            let current_version = &doc[rng.clone()]
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .and_then(|v| semver::Version::parse(v).ok());
+            // we don't want to update latest version, when the user already
+            // uses the latest in their manifest.
+            if current_version
+                .as_ref()
+                .is_some_and(|curr| curr.cmp_precedence(&latest.version) != Ordering::Equal)
+                || current_version.is_none()
+            {
+                let command = CodeActionOrCommand::Command(Command::new(
+                    "Latest version".to_owned(),
+                    "latest_version".to_owned(),
+                    Some(vec![
+                        serde_json::Value::String(name),
+                        serde_json::Value::String(uri.into()),
+                    ]),
+                ));
+                return Ok(Some(vec![command]));
+            }
+        }
+
+        Ok(None)
     }
 
     async fn execute_command(
