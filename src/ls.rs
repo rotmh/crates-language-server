@@ -120,7 +120,6 @@ impl Backend {
     async fn publish_diagnostics(&self, uri: Url) {
         let manifests = self.manifests.read().await;
         let Some(dependencies) = manifests.get(&uri) else {
-            eprintln!("CRATE_DIAG_RET");
             return;
         };
 
@@ -153,8 +152,6 @@ impl Backend {
                 }
             }
         }
-
-        eprintln!("CRATES_DIAG\n{diags:#?}");
 
         self.client.publish_diagnostics(uri, diags, None).await;
     }
@@ -214,12 +211,9 @@ impl LanguageServer for Backend {
         })
     }
 
-    async fn initialized(&self, _: InitializedParams) {
-        eprintln!("CRATES_INIT");
-    }
+    async fn initialized(&self, _: InitializedParams) {}
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        eprintln!("CRATES_DIDOPEN");
         let uri = params.text_document.uri;
         let text = Rope::from_str(&params.text_document.text);
         self.documents.write().await.insert(uri.clone(), text);
@@ -313,8 +307,13 @@ impl LanguageServer for Backend {
             .find_map(|d| d.name.contains_pos(pos).then_some(&d.name.value))
             && self.registry.is_availabe(name).await
         {
-            let crate_docs_url = format!("{DOCS_RS_URL}/crate/{name}");
+            let crate_docs_url = format!("{DOCS_RS_URL}/{name}");
             let uri = Url::parse(&crate_docs_url).expect("url string should be valid");
+
+            // the prefered method to tell the client to open a page in the
+            // browser is returning here a `GotoDefinitionResponse::Scalar`
+            // with a HTTP link. but because helix does not support this (yet?),
+            // we'll use this for now.
             if self
                 .client
                 .show_document(ShowDocumentParams {
