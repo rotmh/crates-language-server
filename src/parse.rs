@@ -1,9 +1,5 @@
-use std::{collections::BTreeMap, str::FromStr};
-
-use cargo_util_schemas::manifest::{InheritableDependency, PackageName};
-use serde::Deserialize;
-use toml_edit::{ImDocument, Item, Value};
-use tower_lsp::lsp_types::{self, Position};
+use toml_edit::{Item, Key, Value};
+use tower_lsp::lsp_types::{self, Position, Range};
 
 pub const DEPENDENCIES_KEY: &str = "dependencies";
 
@@ -13,155 +9,92 @@ pub enum Error {
     Parse,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct CargoManifest {
-    dependencies: Option<BTreeMap<PackageName, InheritableDependency>>,
+#[derive(Debug)]
+pub struct Dependency {
+    pub name: Span<String>,
+    pub version: Option<Span<Option<semver::Version>>>,
+    pub features: Option<Vec<Span<String>>>,
 }
 
-pub struct Dependencies {
-    pub crates: BTreeMap<PackageName, (lsp_types::Range, InheritableDependency)>,
-}
-
-impl FromStr for Dependencies {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let doc = ImDocument::parse(s).map_err(|_| Error::Parse)?;
-        let Some(deps) = doc.get(DEPENDENCIES_KEY).and_then(Item::as_table) else {
-            return Ok(Self {
-                crates: BTreeMap::new(),
-            });
-        };
-
-        let manifest: CargoManifest = toml::from_str(s).map_err(|_| Error::Parse)?;
-        let Some(dependencies) = manifest.dependencies else {
-            return Ok(Self {
-                crates: BTreeMap::new(),
-            });
-        };
+impl Dependency {
+    pub fn parse(s: &str, key: &Key, item: &Item) -> Result<Self, Error> {
+        let name = Self::parse_name(key, s).ok_or(Error::Parse)?;
+        let version = Self::parse_version(item, s);
+        let features = Self::parse_features(item, s);
 
         Ok(Self {
-            crates: dependencies
-                .into_iter()
-                .filter_map(|(name, dep)| {
-                    deps.get_key_value(name.as_str())
-                        .and_then(|(key, _)| key.span())
-                        .map(|rng| (name, (range_to_positions(s, rng), dep)))
-                })
-                .collect(),
+            name,
+            version,
+            features,
         })
     }
 }
 
-/// If the pos is inside a dependecy's name, returns the the name.
-/// Otherwise, returns [`None`].
-///
-/// # Examples
-///
-/// ```
-/// # use crates_language_server::parse::pos_in_dependency_name;
-/// use tower_lsp::lsp_types::Position;
-///
-/// let s = r#"
-/// [dependencies]
-/// serde = "1"
-/// "#;
-/// let pos = Position::new(2, 2);
-///
-/// assert_eq!(pos_in_dependency_name(s, pos), Some("serde".to_owned()));
-/// ```
-pub fn pos_in_dependency_name(s: &str, pos: Position) -> Option<String> {
-    let doc = ImDocument::from_str(s).ok()?;
+impl Dependency {
+    const VERSION_KEY: &str = "version";
+    const FEATURES_KEY: &str = "features";
 
-    doc.get(DEPENDENCIES_KEY)?
-        .as_table()?
-        .get_values()
-        .iter()
-        .filter(|&(keys, _)| (keys.len() == 1))
-        .map(|(keys, _)| keys.first().unwrap())
-        .filter_map(|name| name.span().map(|rng| (name.to_string(), rng)))
-        .find(|(_, rng)| is_pos_in_range(s, rng.to_owned(), pos))
-        .map(|(name, _)| name)
-}
-
-/// If the pos is inside the dependecy's features array, returns the
-/// dependency name. Otherwise, returns [`None`].
-#[inline]
-pub fn pos_in_dependency_features(s: &str, pos: Position) -> Option<String> {
-    pos_in_dependency(s, pos, is_pos_in_features_field)
-}
-
-/// If the pos is inside the dependecy's version string, returns the
-/// dependency name. Otherwise, returns [`None`].
-#[inline]
-pub fn pos_in_dependency_version(s: &str, pos: Position) -> Option<String> {
-    pos_in_dependency(s, pos, is_pos_in_version_field)
-}
-
-fn pos_in_dependency<F>(s: &str, pos: Position, predicate: F) -> Option<String>
-where
-    F: Fn(&str, Position, &Item) -> bool,
-{
-    let doc = ImDocument::from_str(s).ok()?;
-
-    doc.get(DEPENDENCIES_KEY)?
-        .as_table()?
-        .iter()
-        .find(|(_, value)| predicate(s, pos, value))
-        .map(|(name, _)| name.to_owned())
-}
-
-pub fn version_range(s: &str, name: &str) -> Option<std::ops::Range<usize>> {
-    let doc = ImDocument::from_str(s).ok()?;
-
-    doc.get(DEPENDENCIES_KEY)?
-        .as_table()?
-        .iter()
-        .find(|&(key, _)| key == name)
-        .and_then(|(_, value)| version_field_rng(value))
-}
-
-fn version_field_rng(value: &Item) -> Option<std::ops::Range<usize>> {
-    if let Item::Value(value) = value {
-        match value {
-            Value::String(version) if let Some(rng) = version.span() => Some(rng),
-            Value::InlineTable(table)
-                if let Some(Value::String(version)) = table.get("version")
-                    && let Some(rng) = version.span() =>
+    fn parse_version(item: &Item, s: &str) -> Option<Span<Option<semver::Version>>> {
+        let value = match item {
+            Item::Value(Value::String(s)) => Some(s),
+            Item::Value(Value::InlineTable(t))
+                if let Some(Value::String(s)) = t.get(Self::VERSION_KEY) =>
             {
-                Some(rng)
+                Some(s)
             }
             _ => None,
-        }
-    } else {
-        None
-    }
-}
-
-fn is_pos_in_version_field(s: &str, pos: Position, value: &Item) -> bool {
-    version_field_rng(value).is_some_and(|rng| is_pos_in_range(s, rng, pos))
-}
-
-fn is_pos_in_features_field(s: &str, pos: Position, value: &Item) -> bool {
-    if let Item::Value(Value::InlineTable(table)) = value
-        && let Some(Value::Array(features)) = table.get("features")
-        && features.iter().any(|item| {
-            item.is_str() && item.span().is_some_and(|rng| is_pos_in_range(s, rng, pos))
+        };
+        value.and_then(|value| {
+            let range = range_to_positions(s, value.span()?);
+            let value = value
+                .to_string()
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .and_then(|v| semver::Version::parse(v).ok());
+            Some(Span::new(value, range))
         })
-    {
-        true
-    } else {
-        false
+    }
+
+    fn parse_features(item: &Item, s: &str) -> Option<Vec<Span<String>>> {
+        let features = item
+            .as_table()?
+            .get(Self::FEATURES_KEY)?
+            .as_array()?
+            .iter()
+            .filter_map(|elem| {
+                let value = elem.as_str()?.to_owned();
+                let range = range_to_positions(s, elem.span()?);
+                Some(Span::new(value, range))
+            })
+            .collect();
+
+        Some(features)
+    }
+
+    fn parse_name(key: &Key, s: &str) -> Option<Span<String>> {
+        let value = key.to_string();
+        let range = range_to_positions(s, key.span()?);
+        Some(Span::new(value, range))
     }
 }
 
-fn is_pos_in_range(s: &str, rng: std::ops::Range<usize>, pos: Position) -> bool {
-    let positions = range_to_positions(s, rng);
-    let (start, end) = (positions.start, positions.end);
-    !(!(start.line..=end.line).contains(&pos.line)
-        || (start.line == pos.line && pos.character < start.character)
-        || (end.line == pos.line && pos.character > end.character))
+#[derive(Debug)]
+pub struct Span<T> {
+    pub value: T,
+    pub range: Range,
+}
+
+impl<T> Span<T> {
+    pub fn new(value: T, range: Range) -> Self {
+        Self { value, range }
+    }
+
+    pub fn contains_pos(&self, pos: Position) -> bool {
+        let (start, end) = (self.range.start, self.range.end);
+        !(!(start.line..=end.line).contains(&pos.line)
+            || (start.line == pos.line && pos.character < start.character)
+            || (end.line == pos.line && pos.character > end.character))
+    }
 }
 
 fn line_of_idx(s: &str, idx: usize) -> (usize, usize) {
@@ -198,8 +131,8 @@ pub fn range_to_positions(s: &str, r: std::ops::Range<usize>) -> lsp_types::Rang
 
 #[cfg(test)]
 mod tests {
-    use cargo_util_schemas::manifest::{TomlDependency, TomlDetailedDependency};
     use indoc::indoc;
+    use toml_edit::ImDocument;
 
     use super::*;
 
@@ -210,19 +143,19 @@ mod tests {
             serde = { version = "1" }
         "#};
 
-        let deps = Dependencies::from_str(s).unwrap();
-        let serde = deps.crates.get("serde").unwrap();
+        let doc = ImDocument::parse(s).unwrap();
+        let deps = doc.get(DEPENDENCIES_KEY).unwrap().as_table().unwrap();
+        let (key, item) = deps.get_key_value("serde").unwrap();
+        let serde = Dependency::parse(s, key, item).unwrap();
 
-        assert_eq!(serde.0, lsp_types::Range {
+        assert_eq!(serde.name.range, lsp_types::Range {
             start: lsp_types::Position::new(1, 0),
             end: lsp_types::Position::new(1, 5),
         });
-        assert!(matches!(
-            &serde.1,
-            InheritableDependency::Value(TomlDependency::Detailed(
-                TomlDetailedDependency { version: Some(version), .. }
-            )) if version == "1"
-        ));
+        assert_eq!(
+            serde.version.unwrap().value.unwrap().to_string(),
+            "1".to_owned()
+        );
     }
 
     #[test]

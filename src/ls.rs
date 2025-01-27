@@ -1,11 +1,12 @@
-use std::{cmp::Ordering, collections::HashMap, str::FromStr, sync::Arc};
+use std::{cmp::Ordering, collections::HashMap, sync::Arc};
 
 use crate::{
     crates::{self, DOCS_RS_URL},
-    parse::{self, Dependencies},
+    parse::{DEPENDENCIES_KEY, Dependency},
 };
 use ropey::Rope;
 use tokio::sync::RwLock;
+use toml_edit::Item;
 use tower_lsp::{
     Client, LanguageServer, jsonrpc,
     lsp_types::{
@@ -62,6 +63,7 @@ fn features_completions(latest: crates::Latest) -> Vec<CompletionItem> {
 pub struct Backend {
     client: Client,
     documents: Arc<RwLock<HashMap<Url, Rope>>>,
+    manifests: Arc<RwLock<HashMap<Url, Vec<Dependency>>>>,
     registry: crates::RegistryCache,
 }
 
@@ -70,6 +72,7 @@ impl Backend {
         Self {
             client,
             documents: Default::default(),
+            manifests: Default::default(),
             registry: Default::default(),
         }
     }
@@ -99,20 +102,25 @@ impl Backend {
         }
     }
 
-    async fn doc(&self, uri: &Url) -> Option<String> {
-        let docs = self.documents.read().await;
-        docs.get(uri).map(|rope| rope.to_string())
+    async fn update_manifest(&self, uri: Url) {
+        if let Some(s) = self.documents.read().await.get(&uri).map(Rope::to_string)
+            && let Ok(doc) = toml_edit::ImDocument::parse(&s)
+            && let Some(deps) = doc.get(DEPENDENCIES_KEY).and_then(Item::as_table)
+        {
+            let deps = deps
+                .iter()
+                .filter_map(|(name, item)| deps.key(name).map(|key| (key, item)))
+                .filter_map(|(key, item)| Dependency::parse(&s, key, item).ok())
+                .collect();
+
+            self.manifests.write().await.insert(uri, deps);
+        }
     }
 
-    async fn parse_dependencies(&self, uri: &Url) -> Result<Dependencies, ()> {
-        self.doc(uri)
-            .await
-            .ok_or(())
-            .and_then(|doc| Dependencies::from_str(&doc).map_err(|_| ()))
-    }
-
-    async fn on_change(&self, uri: Url) {
-        let Ok(dependencies) = self.parse_dependencies(&uri).await else {
+    async fn publish_diagnostics(&self, uri: Url) {
+        let manifests = self.manifests.read().await;
+        let Some(dependencies) = manifests.get(&uri) else {
+            eprintln!("CRATE_DIAG_RET");
             return;
         };
 
@@ -120,31 +128,24 @@ impl Backend {
 
         // NOTE: maybe we doesn't need `toml` and only `toml_edit`?
 
-        for (name, (range, _)) in dependencies.crates {
-            if let Ok(latest) = self.registry.fetch(name.as_str()).await
-                && let Some(doc) = self.doc(&uri).await
-                && let Some(rng) = parse::version_range(&doc, &name)
+        for dependency in dependencies.iter() {
+            if let Some(current_version) = &dependency.version
+                && let Ok(latest) = self.registry.fetch(&dependency.name.value).await
             {
-                let current_version = &doc[rng.clone()]
-                    .strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
-                    .and_then(|v| semver::Version::parse(v).ok());
                 // we don't want to hint latest version, when the user already
                 // uses the latest in their manifest.
                 if current_version
+                    .value
                     .as_ref()
-                    .is_some_and(|curr| curr.cmp_precedence(&latest.version) != Ordering::Equal)
-                    || current_version.is_none()
+                    .is_none_or(|v| v.cmp_precedence(&latest.version) != Ordering::Equal)
                 {
-                    let range = parse::range_to_positions(&doc, rng);
-                    let message = latest.version.to_string();
                     diags.push(Diagnostic {
-                        range,
+                        range: current_version.range,
                         severity: Some(DiagnosticSeverity::INFORMATION),
                         code: None,
                         code_description: None,
                         source: None,
-                        message,
+                        message: latest.version.to_string(),
                         related_information: None,
                         tags: None,
                         data: None,
@@ -152,6 +153,8 @@ impl Backend {
                 }
             }
         }
+
+        eprintln!("CRATES_DIAG\n{diags:#?}");
 
         self.client.publish_diagnostics(uri, diags, None).await;
     }
@@ -193,11 +196,6 @@ impl LanguageServer for Backend {
                 // We provide hover events
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
 
-                // We provide inlay hints
-                //
-                // TODO: uncomment
-                // inlay_hint_provider: Some(OneOf::Left(true)),
-
                 // We provide code action events
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
 
@@ -216,20 +214,24 @@ impl LanguageServer for Backend {
         })
     }
 
-    async fn initialized(&self, _: InitializedParams) {}
+    async fn initialized(&self, _: InitializedParams) {
+        eprintln!("CRATES_INIT");
+    }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        self.documents.write().await.insert(
-            params.text_document.uri.clone(),
-            Rope::from_str(&params.text_document.text),
-        );
-        self.on_change(params.text_document.uri).await;
+        eprintln!("CRATES_DIDOPEN");
+        let uri = params.text_document.uri;
+        let text = Rope::from_str(&params.text_document.text);
+        self.documents.write().await.insert(uri.clone(), text);
+        self.update_manifest(uri.clone()).await;
+        self.publish_diagnostics(uri).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        self.apply_changes(&params.text_document.uri, params.content_changes)
-            .await;
-        self.on_change(params.text_document.uri).await;
+        let uri = params.text_document.uri;
+        self.apply_changes(&uri, params.content_changes).await;
+        self.update_manifest(uri.clone()).await;
+        self.publish_diagnostics(uri).await;
     }
 
     async fn completion(
@@ -238,30 +240,46 @@ impl LanguageServer for Backend {
     ) -> jsonrpc::Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
-        let Some(doc) = self.doc(&uri).await else {
+        let manifests = self.manifests.read().await;
+        let Some(dependencies) = manifests.get(&uri) else {
             return Ok(None);
         };
-        let comps = if let Some(name) = parse::pos_in_dependency_version(&doc, pos) {
-            self.generate_completion(&name, version_completions).await
-        } else if let Some(name) = parse::pos_in_dependency_features(&doc, pos) {
-            self.generate_completion(&name, features_completions).await
-        } else {
-            None
-        };
 
-        Ok(comps)
+        for dependecy in dependencies.iter() {
+            if dependecy
+                .version
+                .as_ref()
+                .is_some_and(|v| v.contains_pos(pos))
+            {
+                let name = &dependecy.name.value;
+                let comps = self.generate_completion(name, version_completions).await;
+                return Ok(comps);
+            } else if dependecy
+                .features
+                .as_ref()
+                .is_some_and(|f| f.iter().any(|f| f.contains_pos(pos)))
+            {
+                let name = &dependecy.name.value;
+                let comps = self.generate_completion(name, features_completions).await;
+                return Ok(comps);
+            }
+        }
+
+        Ok(None)
     }
 
     async fn hover(&self, params: HoverParams) -> jsonrpc::Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
-        let name = self
-            .doc(&uri)
-            .await
-            .and_then(|doc| parse::pos_in_dependency_name(&doc, pos));
+        let manifests = self.manifests.read().await;
+        let Some(dependencies) = manifests.get(&uri) else {
+            return Ok(None);
+        };
 
-        let hover = if let Some(name) = name
-            && let Ok(latest) = self.registry.fetch(&name).await
+        let hover = if let Some(name) = dependencies
+            .iter()
+            .find_map(|d| d.name.contains_pos(pos).then_some(&d.name.value))
+            && let Ok(latest) = self.registry.fetch(name).await
         {
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
@@ -285,13 +303,15 @@ impl LanguageServer for Backend {
     ) -> jsonrpc::Result<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
-        let name = self
-            .doc(&uri)
-            .await
-            .and_then(|doc| parse::pos_in_dependency_name(&doc, pos));
+        let manifests = self.manifests.read().await;
+        let Some(dependencies) = manifests.get(&uri) else {
+            return Ok(None);
+        };
 
-        if let Some(name) = name
-            && self.registry.is_availabe(&name).await
+        if let Some(name) = dependencies
+            .iter()
+            .find_map(|d| d.name.contains_pos(pos).then_some(&d.name.value))
+            && self.registry.is_availabe(name).await
         {
             let crate_docs_url = format!("{DOCS_RS_URL}/crate/{name}");
             let uri = Url::parse(&crate_docs_url).expect("url string should be valid");
@@ -324,36 +344,32 @@ impl LanguageServer for Backend {
     ) -> jsonrpc::Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
         let lsp_types::Range { start, end } = params.range;
-        let doc = self.doc(&uri).await;
-        let name = doc.and_then(|doc| {
-            parse::pos_in_dependency_version(&doc, start)
-                .or_else(|| parse::pos_in_dependency_version(&doc, end))
-        });
+        let manifests = self.manifests.read().await;
+        let Some(dependencies) = manifests.get(&uri) else {
+            return Ok(None);
+        };
 
         // TODO: resolve duplication from on_change
 
-        if let Some(doc) = self.doc(&uri).await
-            && let Some(name) = parse::pos_in_dependency_version(&doc, start)
-                .or_else(|| parse::pos_in_dependency_version(&doc, end))
-            && let Some(rng) = parse::version_range(&doc, &name)
-            && let Ok(latest) = self.registry.fetch(&name).await
+        if let Some(dependency) = dependencies.iter().find(|d| {
+            d.version
+                .as_ref()
+                .is_some_and(|v| v.contains_pos(start) || v.contains_pos(end))
+        }) && let Ok(latest) = self.registry.fetch(&dependency.name.value).await
         {
-            let current_version = &doc[rng.clone()]
-                .strip_prefix('"')
-                .and_then(|v| v.strip_suffix('"'))
-                .and_then(|v| semver::Version::parse(v).ok());
+            let current_version = dependency.version.as_ref().unwrap();
             // we don't want to update latest version, when the user already
             // uses the latest in their manifest.
             if current_version
+                .value
                 .as_ref()
-                .is_some_and(|curr| curr.cmp_precedence(&latest.version) != Ordering::Equal)
-                || current_version.is_none()
+                .is_none_or(|v| v.cmp_precedence(&latest.version) != Ordering::Equal)
             {
                 let command = CodeActionOrCommand::Command(Command::new(
                     "Latest version".to_owned(),
                     "latest_version".to_owned(),
                     Some(vec![
-                        serde_json::Value::String(name),
+                        serde_json::Value::String(dependency.name.value.to_owned()),
                         serde_json::Value::String(uri.into()),
                     ]),
                 ));
@@ -372,11 +388,13 @@ impl LanguageServer for Backend {
             && let Some(serde_json::Value::String(name)) = params.arguments.first()
             && let Some(serde_json::Value::String(uri)) = params.arguments.get(1)
             && let Ok(uri) = Url::parse(uri)
-            && let Some(doc) = self.doc(&uri).await
-            && let Some(rng) = parse::version_range(&doc, name)
+            && let Some(range) = self.manifests.read().await.get(&uri).and_then(|deps| {
+                deps.iter()
+                    .find(|d| &d.name.value == name)
+                    .and_then(|d| d.version.as_ref().map(|v| v.range))
+            })
             && let Ok(latest) = self.registry.fetch(name).await
         {
-            let range = parse::range_to_positions(&doc, rng);
             let change = TextEdit::new(range, format!("\"{}\"", latest.version));
             let changes = WorkspaceEdit::new(std::iter::once((uri, vec![change])).collect());
             let _ = self.client.apply_edit(changes).await;

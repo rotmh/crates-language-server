@@ -139,9 +139,9 @@ impl RegistryCache {
             .await
             .and_then(|body| Index::parse(name, &body))?
             .entries;
-        let latest = entries
-            .last()
-            .expect("index should contain at least one entry");
+        let latest = entries.last().ok_or_else(|| Error::Parse {
+            name: name.to_owned(),
+        })?;
 
         let version = semver::Version::parse(&latest.vers).map_err(|_| Error::Parse {
             name: name.to_owned(),
@@ -201,18 +201,6 @@ impl Index {
         }
 
         Ok(Self { entries })
-    }
-
-    pub fn latest(&self) -> &Entry {
-        // FIXME: don't use all these `.unwrap()`s
-        self.entries
-            .iter()
-            .max_by(|a, b| {
-                let version_a = semver::Version::parse(&a.vers).unwrap();
-                let version_b = semver::Version::parse(&b.vers).unwrap();
-                version_a.cmp(&version_b)
-            })
-            .unwrap()
     }
 }
 

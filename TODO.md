@@ -6,4 +6,5 @@
 - [x] Open `docs.rs` in the browser on `goto definition`
 - [x] Code action to update crate version to latest
 - [x] Completion for features
-- [x] Insightful version completion algorithm (e.g., what will happen for `2.0.0-alpha`?)
+- [ ] Insightful version completion algorithm (e.g., what will happen for `2.0.0-alpha`?)
+- [ ] Parse versions in a way that would make `"1"` valid
