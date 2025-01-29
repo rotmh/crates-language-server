@@ -5,8 +5,8 @@ use crate::{
     parse::{DEPENDENCIES_KEY, Dependency},
 };
 use ropey::Rope;
+use taplo::dom;
 use tokio::sync::RwLock;
-use toml_edit::Item;
 use tower_lsp::{
     Client, LanguageServer, jsonrpc,
     lsp_types::{
@@ -103,17 +103,32 @@ impl Backend {
     }
 
     async fn update_manifest(&self, uri: Url) {
-        if let Some(s) = self.documents.read().await.get(&uri).map(Rope::to_string)
-            && let Ok(doc) = toml_edit::ImDocument::parse(&s)
-            && let Some(deps) = doc.get(DEPENDENCIES_KEY).and_then(Item::as_table)
+        if let Some(doc) = self.documents.read().await.get(&uri).map(Rope::to_string)
+            // NOTE: we must parse the document in a separate function as the
+            // `Node` type does not implement the `Send` trait.
+            && let Ok(deps) = self.parse_document(&doc)
         {
+            self.manifests.write().await.insert(uri, deps);
+        }
+    }
+
+    fn parse_document(&self, doc: &str) -> Result<Vec<Dependency>, ()> {
+        let deps = taplo::parser::parse(&doc)
+            .into_dom()
+            .as_table()
+            .and_then(|t| t.get(DEPENDENCIES_KEY));
+
+        if let Some(dom::node::Node::Table(deps)) = deps {
             let deps = deps
+                .entries()
+                .read()
                 .iter()
-                .filter_map(|(name, item)| deps.key(name).map(|key| (key, item)))
-                .filter_map(|(key, item)| Dependency::parse(&s, key, item).ok())
+                .flat_map(|(key, node)| Dependency::parse(&doc, key, node))
                 .collect();
 
-            self.manifests.write().await.insert(uri, deps);
+            Ok(deps)
+        } else {
+            Err(())
         }
     }
 
