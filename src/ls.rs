@@ -136,7 +136,7 @@ impl Backend {
                 if current_version
                     .value
                     .as_ref()
-                    .is_none_or(|v| v.cmp_precedence(&latest.version) != Ordering::Equal)
+                    .is_none_or(|v| *v != latest.version)
                 {
                     diags.push(Diagnostic {
                         range: current_version.range,
