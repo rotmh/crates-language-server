@@ -1,11 +1,8 @@
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, hash_map},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     crates::{self, DOCS_RS_URL},
+    format,
     parse::{DEPENDENCIES_KEYS, Dependency},
 };
 use ropey::Rope;
@@ -14,92 +11,20 @@ use tokio::sync::RwLock;
 use tower_lsp::{
     Client, LanguageServer, jsonrpc,
     lsp_types::{
-        self, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
-        CodeActionResponse, Command, CompletionItem, CompletionOptions, CompletionParams,
-        CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-        DidOpenTextDocumentParams, ExecuteCommandOptions, ExecuteCommandParams,
-        GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-        HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
-        MarkupContent, MarkupKind, MessageType, OneOf, ServerCapabilities, ShowDocumentParams,
-        TextDocumentContentChangeEvent, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-        WorkDoneProgressOptions, WorkspaceEdit,
+        CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, CodeActionResponse,
+        Command, CompletionItem, CompletionOptions, CompletionParams, CompletionResponse,
+        Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+        ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams, GotoDefinitionResponse,
+        Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams,
+        InitializeResult, MarkupContent, MarkupKind, MessageType, OneOf, Range, ServerCapabilities,
+        ShowDocumentParams, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
+        TextDocumentSyncKind, TextEdit, WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 use url::Url;
 
-fn version_completions(latest: crates::Latest) -> Vec<CompletionItem> {
-    let version = latest.version;
-
-    let mut comps = vec![
-        CompletionItem::new_simple(
-            format!("{}.{}.{}", version.major, version.minor, version.patch),
-            "patch".to_owned(),
-        ),
-        CompletionItem::new_simple(
-            format!("{}.{}", version.major, version.minor),
-            "minor".to_owned(),
-        ),
-        CompletionItem::new_simple(format!("{}", version.major), "major".to_owned()),
-    ];
-
-    // this is often not the case, so it's not that bad the we are
-    // inserting here (which is O(N)).
-    if !(version.pre.is_empty() && version.build.is_empty()) {
-        let full = CompletionItem::new_simple(version.to_string(), "latest".to_owned());
-        comps.insert(0, full);
-    }
-
-    comps
-}
-
-fn format_vec(vec: &[String]) -> String {
-    format!("[ {} ]", vec.join(", "))
-}
-
-fn features_completions(dependency: &Dependency, latest: crates::Latest) -> Vec<CompletionItem> {
-    let features = dependency.features.as_ref();
-    let already_used = |name: &str| features.is_some_and(|f| f.iter().any(|f| f.value == name));
-
-    // TODO: make the completions _replace_ the current content of the feature.
-
-    if let Some(available_features) = latest.features {
-        available_features
-            .into_iter()
-            .filter(|(name, _)| !already_used(name))
-            .map(|(name, f)| CompletionItem::new_simple(name, format_vec(&f)))
-            .collect()
-    } else {
-        Vec::new()
-    }
-}
-
-fn format_feature_hover(feature: &str, feature_description: &[String]) -> String {
-    format!("{}\n\n{}", feature, format_vec(feature_description))
-}
-
-fn format_name_hover(name: &str, latest: crates::Latest) -> String {
-    let header = format!("{}: {}", name, latest.version);
-
-    // Format the features like so:
-    //
-    //   [ feat1, feat2, feat3 ]
-    let features = latest
-        .features
-        .as_ref()
-        .map(HashMap::keys)
-        .map(hash_map::Keys::into_iter)
-        .map(|f| f.map(String::as_str))
-        .map(Iterator::collect::<Vec<_>>)
-        .map(|f| f.join(", "));
-    let features = features
-        .filter(|f| !f.is_empty())
-        .map(|f| format!("[ {} ]", f));
-
-    [Some(header), features, latest.description]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("\n\n")
+pub mod code_action {
+    pub const LATEST_VERSION: &str = "latest_version";
 }
 
 #[derive(Debug)]
@@ -122,7 +47,7 @@ impl Backend {
 
     async fn apply_changes(&self, uri: &Url, changes: Vec<TextDocumentContentChangeEvent>) {
         if let Some(doc) = self.documents.write().await.get_mut(uri) {
-            // according to the [LSP spec]:
+            // According to the [LSP spec]:
             //
             //   To mirror the content of a document using change events [...]
             //   apply the `TextDocumentContentChangeEvent`s in a single
@@ -184,12 +109,9 @@ impl Backend {
 
             // Latest version hint
             if let Some(current_version) = &dependency.version
-                // we don't want to hint latest version, when the user already
-                // uses the latest in their manifest.
-                && current_version
-                    .value
-                    .as_ref()
-                    .is_none_or(|v| *v != latest.version)
+                // We don't want to hint latest version, if the user already
+                // uses the latest version in their manifest.
+                && current_version.value.as_ref().is_none_or(|v| *v != latest.version)
             {
                 diags.push(Diagnostic {
                     range: current_version.range,
@@ -309,7 +231,7 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
 
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["latest_version".to_owned()],
+                    commands: vec![code_action::LATEST_VERSION.to_owned()],
                     work_done_progress_options: WorkDoneProgressOptions {
                         work_done_progress: None,
                     },
@@ -319,8 +241,6 @@ impl LanguageServer for Backend {
             },
         })
     }
-
-    async fn initialized(&self, _: InitializedParams) {}
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
@@ -355,7 +275,9 @@ impl LanguageServer for Backend {
                 .is_some_and(|v| v.contains_pos(pos))
             {
                 let name = &dependecy.name.value;
-                let comps = self.generate_completion(name, version_completions).await;
+                let comps = self
+                    .generate_completion(name, format::version_completions)
+                    .await;
                 return Ok(comps);
             } else if dependecy
                 .features
@@ -364,7 +286,9 @@ impl LanguageServer for Backend {
             {
                 let name = &dependecy.name.value;
                 let comps = self
-                    .generate_completion(name, |latest| features_completions(dependecy, latest))
+                    .generate_completion(name, |latest| {
+                        format::features_completions(dependecy, latest)
+                    })
                     .await;
                 return Ok(comps);
             }
@@ -391,11 +315,13 @@ impl LanguageServer for Backend {
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::PlainText,
-                    value: format_name_hover(&name.value, latest),
+                    value: format::format_name_hover(&name.value, latest),
                 }),
                 range: Some(name.range),
             })
         } else if let Some((name, feature)) = dependencies.iter().find_map(|d| {
+            // Hovering over some feature
+
             let feature = d
                 .features
                 .as_ref()
@@ -408,7 +334,7 @@ impl LanguageServer for Backend {
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::PlainText,
-                    value: format_feature_hover(&feature.value, feature_description),
+                    value: format::format_feature_hover(&feature.value, feature_description),
                 }),
                 range: Some(feature.range),
             })
@@ -434,31 +360,23 @@ impl LanguageServer for Backend {
             .iter()
             .find_map(|d| d.name.contains_pos(pos).then_some(&d.name.value))
             && self.registry.is_availabe(name).await
+            && let Ok(uri) = Url::parse(&format!("{DOCS_RS_URL}/{name}"))
         {
-            let crate_docs_url = format!("{DOCS_RS_URL}/{name}");
-            let uri = Url::parse(&crate_docs_url).expect("url string should be valid");
-
-            // the prefered method to tell the client to open a page in the
+            // The prefered method to tell the client to open a page in the
             // browser is returning here a `GotoDefinitionResponse::Scalar`
-            // with a HTTP link. but because helix does not support this (yet?),
-            // we'll use this for now.
-            if self
-                .client
-                .show_document(ShowDocumentParams {
-                    uri,
-                    external: Some(true),
-                    take_focus: None,
-                    selection: None,
-                })
-                .await
-                .is_ok()
-            {
-                self.client
-                    .show_message(
-                        MessageType::INFO,
-                        format!("opened docs for `{name}` in your browser"),
-                    )
-                    .await;
+            // with a HTTP link. But because helix does not support this at
+            // time of writing, we'll use this for now.
+            let params = ShowDocumentParams {
+                uri,
+                external: Some(true),
+                take_focus: None,
+                selection: None,
+            };
+            let was_shown = self.client.show_document(params).await;
+
+            if matches!(was_shown, Ok(true)) {
+                let msg = format!("opened docs for `{name}` in your browser");
+                self.client.show_message(MessageType::INFO, msg).await;
             }
         }
 
@@ -470,31 +388,28 @@ impl LanguageServer for Backend {
         params: CodeActionParams,
     ) -> jsonrpc::Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
-        let lsp_types::Range { start, end } = params.range;
+        let Range { start, end } = params.range;
         let manifests = self.manifests.read().await;
         let Some(dependencies) = manifests.get(&uri) else {
             return Ok(None);
         };
 
-        // TODO: resolve duplication from on_change
-
-        if let Some(dependency) = dependencies.iter().find(|d| {
+        let dependency = dependencies.iter().find(|d| {
             d.version
                 .as_ref()
                 .is_some_and(|v| v.contains_pos(start) || v.contains_pos(end))
-        }) && let Ok(latest) = self.registry.fetch(&dependency.name.value).await
+        });
+
+        if let Some(dependency) = dependency
+            && let Ok(latest) = self.registry.fetch(&dependency.name.value).await
         {
-            let current_version = dependency.version.as_ref().unwrap();
-            // we don't want to update latest version, when the user already
-            // uses the latest in their manifest.
-            if current_version
-                .value
-                .as_ref()
-                .is_none_or(|v| v.cmp_precedence(&latest.version) != Ordering::Equal)
-            {
+            let current_version = dependency.version.as_ref().and_then(|v| v.value.as_ref());
+            // We don't want to suggest the LATEST_VERSION code action if
+            // the user already uses the latest version in their manifest.
+            if current_version.is_none_or(|v| *v != latest.version) {
                 let command = CodeActionOrCommand::Command(Command::new(
                     "Latest version".to_owned(),
-                    "latest_version".to_owned(),
+                    code_action::LATEST_VERSION.to_owned(),
                     Some(vec![
                         serde_json::Value::String(dependency.name.value.to_owned()),
                         serde_json::Value::String(uri.into()),
@@ -511,7 +426,7 @@ impl LanguageServer for Backend {
         &self,
         params: ExecuteCommandParams,
     ) -> jsonrpc::Result<Option<serde_json::Value>> {
-        if params.command == "latest_version"
+        if params.command == code_action::LATEST_VERSION
             && let Some(serde_json::Value::String(name)) = params.arguments.first()
             && let Some(serde_json::Value::String(uri)) = params.arguments.get(1)
             && let Ok(uri) = Url::parse(uri)

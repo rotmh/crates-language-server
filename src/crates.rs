@@ -181,12 +181,12 @@ pub struct Latest {
     pub description: Option<String>,
 }
 
+pub type Result<T> = std::result::Result<T, Error>;
+
 #[derive(Debug)]
-pub struct Index {
+struct Index {
     pub entries: Vec<Entry>,
 }
-
-pub type Result<T> = std::result::Result<T, Error>;
 
 impl Index {
     pub fn parse(name: &str, json_entries: &str) -> Result<Self> {
@@ -206,7 +206,7 @@ impl Index {
 
 /// https://doc.rust-lang.org/cargo/reference/registry-index.html#json-schema
 #[derive(Deserialize, Debug)]
-pub struct Entry {
+struct Entry {
     /// The name of the package.
     /// This must only contain alphanumeric, `-`, or `_` characters.
     pub name: String,
@@ -270,7 +270,7 @@ pub struct Entry {
 }
 
 #[derive(Deserialize, Debug)]
-pub struct Dependency {
+struct Dependency {
     /// Name of the dependency.
     /// If the dependency is renamed from the original package name,
     /// this is the new name. The original package name is stored in
@@ -312,7 +312,7 @@ pub struct Dependency {
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
-pub enum DependencyKind {
+enum DependencyKind {
     Dev,
     Build,
     Normal,

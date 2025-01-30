@@ -4,5 +4,6 @@
 #![feature(if_let_guard)]
 
 pub mod crates;
+pub mod format;
 pub mod ls;
 pub mod parse;

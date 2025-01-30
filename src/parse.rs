@@ -142,28 +142,6 @@ mod tests {
 
     use super::*;
 
-    // #[test]
-    // fn parse_dependencies() {
-    //     let s = indoc! {r#"
-    //         [dependencies]
-    //         serde = { version = "1" }
-    //     "#};
-
-    //     let doc = ImDocument::parse(s).unwrap();
-    //     let deps = doc.get(DEPENDENCIES_KEY).unwrap().as_table().unwrap();
-    //     let (key, item) = deps.get_key_value("serde").unwrap();
-    //     let serde = Dependency::parse(s, key, item).unwrap();
-
-    //     assert_eq!(serde.name.range, lsp_types::Range {
-    //         start: lsp_types::Position::new(1, 0),
-    //         end: lsp_types::Position::new(1, 5),
-    //     });
-    //     assert_eq!(
-    //         serde.version.unwrap().value.unwrap().to_string(),
-    //         "1".to_owned()
-    //     );
-    // }
-
     #[test]
     fn test_range_to_positions() {
         let s = indoc! {r#"
