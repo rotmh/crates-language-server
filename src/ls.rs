@@ -1,4 +1,8 @@
-use std::{cmp::Ordering, collections::HashMap, sync::Arc};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, HashMap, btree_map},
+    sync::Arc,
+};
 
 use crate::{
     crates::{self, DOCS_RS_URL},
@@ -59,6 +63,31 @@ fn features_completions(latest: crates::Latest) -> Vec<CompletionItem> {
         .unwrap_or_default()
 }
 
+fn format_hover(name: &str, latest: crates::Latest) -> String {
+    let header = format!("{}: {}", name, latest.version);
+
+    // Format the features like so:
+    //
+    //   [ feat1, feat2, feat3 ]
+    let features = latest
+        .features
+        .as_ref()
+        .map(BTreeMap::keys)
+        .map(btree_map::Keys::into_iter)
+        .map(|f| f.map(String::as_str))
+        .map(Iterator::collect::<Vec<_>>)
+        .map(|f| f.join(", "));
+    let features = features
+        .filter(|f| !f.is_empty())
+        .map(|f| format!("[ {} ]", f));
+
+    [Some(header), features, latest.description]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 #[derive(Debug)]
 pub struct Backend {
     client: Client,
@@ -113,7 +142,7 @@ impl Backend {
     }
 
     fn parse_document(&self, doc: &str) -> Result<Vec<Dependency>, ()> {
-        let deps = taplo::parser::parse(&doc)
+        let deps = taplo::parser::parse(doc)
             .into_dom()
             .as_table()
             .and_then(|t| t.get(DEPENDENCIES_KEY));
@@ -123,7 +152,7 @@ impl Backend {
                 .entries()
                 .read()
                 .iter()
-                .flat_map(|(key, node)| Dependency::parse(&doc, key, node))
+                .flat_map(|(key, node)| Dependency::parse(doc, key, node))
                 .collect();
 
             Ok(deps)
@@ -132,20 +161,12 @@ impl Backend {
         }
     }
 
-    async fn publish_diagnostics(&self, uri: Url) {
-        let manifests = self.manifests.read().await;
-        let Some(dependencies) = manifests.get(&uri) else {
-            return;
-        };
+    async fn generate_diagnostics(&self, dependency: &Dependency) -> Vec<Diagnostic> {
+        if let Ok(latest) = self.registry.fetch(&dependency.name.value).await {
+            let mut diags = Vec::new();
 
-        let mut diags = Vec::new();
-
-        // NOTE: maybe we doesn't need `toml` and only `toml_edit`?
-
-        for dependency in dependencies.iter() {
-            if let Some(current_version) = &dependency.version
-                && let Ok(latest) = self.registry.fetch(&dependency.name.value).await
-            {
+            // Latest version hint
+            if let Some(current_version) = &dependency.version {
                 // we don't want to hint latest version, when the user already
                 // uses the latest in their manifest.
                 if current_version
@@ -166,7 +187,64 @@ impl Backend {
                     });
                 }
             }
+
+            // Non-existant features
+            if let Some(available_features) = latest
+                .features
+                .as_ref()
+                .map(BTreeMap::keys)
+                .map(|f| f.collect::<Vec<_>>())
+                && let Some(features) = &dependency.features
+            {
+                for feature in features.iter() {
+                    if !available_features.contains(&&feature.value) {
+                        diags.push(Diagnostic {
+                            range: feature.range,
+                            severity: Some(DiagnosticSeverity::ERROR),
+                            code: None,
+                            code_description: None,
+                            source: None,
+                            message: format!(
+                                "No such feature available for crate `{}`",
+                                &dependency.name.value
+                            ),
+                            related_information: None,
+                            tags: None,
+                            data: None,
+                        });
+                    }
+                }
+            }
+
+            diags
+        } else {
+            vec![Diagnostic {
+                range: dependency.name.range,
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: None,
+                code_description: None,
+                source: None,
+                message: "No such crate in crates.io".to_owned(),
+                related_information: None,
+                tags: None,
+                data: None,
+            }]
         }
+    }
+
+    async fn publish_diagnostics(&self, uri: Url) {
+        let manifests = self.manifests.read().await;
+        let Some(dependencies) = manifests.get(&uri) else {
+            return;
+        };
+
+        let mut diags = Vec::new();
+
+        for dependency in dependencies.iter() {
+            diags.push(self.generate_diagnostics(dependency).await);
+        }
+
+        let diags = diags.into_iter().flatten().collect();
 
         self.client.publish_diagnostics(uri, diags, None).await;
     }
@@ -293,9 +371,7 @@ impl LanguageServer for Backend {
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::PlainText,
-                    value: latest
-                        .description
-                        .unwrap_or_else(|| "Did not fetch description yet".to_owned()),
+                    value: format_hover(name, latest),
                 }),
                 range: None,
             })

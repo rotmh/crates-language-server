@@ -2,10 +2,19 @@
 
 A language server for `Cargo.toml`'s dependencies.
 
-## Features
+## Features ✨
 
 - **Diagnostic Hints** - show hints for latest version for every dependency version (that is not the latest).
-- **Description on Hover** - show a crate's description on hover event on a dependency name.
+- **Info on Hover** - show info about a create on hover in this format:
+
+  ```
+  <NAME>: <LATEST_VERSION>
+
+  <AVAILABLE_FEATURES>
+
+  <DESCRIPTION>
+  ```
+
 - **Code Actions** - a code action for updating a dependency version to latest.
 - **Version Completion** - open a version's quotation mark (`"`), and you'll be presented with a list of different granularities for the latest version, e.g., for a crate with the latest version `0.1.3`, you'll be offered with the completions: [ `0.1.3`, `0.1`, `0` ].
 - **Features Completion** - open a features' quotation mark inside the features array, and you'll be presented with a list of a crate's available features.
