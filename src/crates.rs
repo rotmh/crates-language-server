@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -177,7 +177,7 @@ impl Default for RegistryCache {
 #[derive(Clone, Debug)]
 pub struct Latest {
     pub version: semver::Version,
-    pub features: Option<BTreeMap<String, Vec<String>>>,
+    pub features: Option<HashMap<String, Vec<String>>>,
     pub description: Option<String>,
 }
 
@@ -221,7 +221,7 @@ pub struct Entry {
     /// Set of features defined for the package.
     /// Each feature maps to an array of features or dependencies it enables.
     /// May be omitted since Cargo 1.84.
-    pub features: Option<BTreeMap<String, Vec<String>>>,
+    pub features: Option<HashMap<String, Vec<String>>>,
     /// Boolean of whether or not this version has been yanked.
     pub yanked: bool,
     /// The `links` string value from the package's manifest, or null if not
@@ -263,7 +263,7 @@ pub struct Entry {
     /// Using this is only necessary if the registry wants to support cargo
     /// versions older than 1.19, which in practice is only crates.io since
     /// those older versions do not support other registries.
-    pub features2: Option<BTreeMap<String, Vec<String>>>,
+    pub features2: Option<HashMap<String, Vec<String>>>,
     /// The minimal supported Rust version (optional)
     /// This must be a valid version requirement without an operator (e.g. no `=`)
     pub rust_version: Option<String>,

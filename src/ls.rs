@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, btree_map},
+    collections::{HashMap, hash_map},
     sync::Arc,
 };
 
@@ -81,8 +81,8 @@ fn format_hover(name: &str, latest: crates::Latest) -> String {
     let features = latest
         .features
         .as_ref()
-        .map(BTreeMap::keys)
-        .map(btree_map::Keys::into_iter)
+        .map(HashMap::keys)
+        .map(hash_map::Keys::into_iter)
         .map(|f| f.map(String::as_str))
         .map(Iterator::collect::<Vec<_>>)
         .map(|f| f.join(", "));
@@ -200,7 +200,7 @@ impl Backend {
             if let Some(available_features) = latest
                 .features
                 .as_ref()
-                .map(BTreeMap::keys)
+                .map(HashMap::keys)
                 .map(|f| f.collect::<Vec<_>>())
                 && let Some(features) = &dependency.features
             {
