@@ -52,15 +52,24 @@ fn version_completions(latest: crates::Latest) -> Vec<CompletionItem> {
     comps
 }
 
-fn features_completions(latest: crates::Latest) -> Vec<CompletionItem> {
-    latest
-        .features
-        .map(|f| {
-            f.into_keys()
-                .map(|name| CompletionItem::new_simple(name, "todo".to_owned()))
-                .collect()
-        })
-        .unwrap_or_default()
+fn features_completions(dependency: &Dependency, latest: crates::Latest) -> Vec<CompletionItem> {
+    fn format_vec(vec: Vec<String>) -> String {
+        format!("[ {} ]", vec.join(", "))
+    }
+    let features = dependency.features.as_ref();
+    let already_used = |name: &str| features.is_some_and(|f| f.iter().any(|f| f.value == name));
+
+    // TODO: make the completions _replace_ the current content of the feature.
+
+    if let Some(available_features) = latest.features {
+        available_features
+            .into_iter()
+            .filter(|(name, _)| !already_used(name))
+            .map(|(name, f)| CompletionItem::new_simple(name, format_vec(f)))
+            .collect()
+    } else {
+        Vec::new()
+    }
 }
 
 fn format_hover(name: &str, latest: crates::Latest) -> String {
@@ -166,26 +175,25 @@ impl Backend {
             let mut diags = Vec::new();
 
             // Latest version hint
-            if let Some(current_version) = &dependency.version {
+            if let Some(current_version) = &dependency.version
                 // we don't want to hint latest version, when the user already
                 // uses the latest in their manifest.
-                if current_version
+                && current_version
                     .value
                     .as_ref()
                     .is_none_or(|v| *v != latest.version)
-                {
-                    diags.push(Diagnostic {
-                        range: current_version.range,
-                        severity: Some(DiagnosticSeverity::INFORMATION),
-                        code: None,
-                        code_description: None,
-                        source: None,
-                        message: latest.version.to_string(),
-                        related_information: None,
-                        tags: None,
-                        data: None,
-                    });
-                }
+            {
+                diags.push(Diagnostic {
+                    range: current_version.range,
+                    severity: Some(DiagnosticSeverity::INFORMATION),
+                    code: None,
+                    code_description: None,
+                    source: None,
+                    message: latest.version.to_string(),
+                    related_information: None,
+                    tags: None,
+                    data: None,
+                });
             }
 
             // Non-existant features
@@ -347,7 +355,9 @@ impl LanguageServer for Backend {
                 .is_some_and(|f| f.iter().any(|f| f.contains_pos(pos)))
             {
                 let name = &dependecy.name.value;
-                let comps = self.generate_completion(name, features_completions).await;
+                let comps = self
+                    .generate_completion(name, |latest| features_completions(dependecy, latest))
+                    .await;
                 return Ok(comps);
             }
         }
