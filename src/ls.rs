@@ -52,10 +52,11 @@ fn version_completions(latest: crates::Latest) -> Vec<CompletionItem> {
     comps
 }
 
+fn format_vec(vec: &[String]) -> String {
+    format!("[ {} ]", vec.join(", "))
+}
+
 fn features_completions(dependency: &Dependency, latest: crates::Latest) -> Vec<CompletionItem> {
-    fn format_vec(vec: Vec<String>) -> String {
-        format!("[ {} ]", vec.join(", "))
-    }
     let features = dependency.features.as_ref();
     let already_used = |name: &str| features.is_some_and(|f| f.iter().any(|f| f.value == name));
 
@@ -65,14 +66,18 @@ fn features_completions(dependency: &Dependency, latest: crates::Latest) -> Vec<
         available_features
             .into_iter()
             .filter(|(name, _)| !already_used(name))
-            .map(|(name, f)| CompletionItem::new_simple(name, format_vec(f)))
+            .map(|(name, f)| CompletionItem::new_simple(name, format_vec(&f)))
             .collect()
     } else {
         Vec::new()
     }
 }
 
-fn format_hover(name: &str, latest: crates::Latest) -> String {
+fn format_feature_hover(feature: &str, feature_description: &[String]) -> String {
+    format!("{}\n\n{}", feature, format_vec(feature_description))
+}
+
+fn format_name_hover(name: &str, latest: crates::Latest) -> String {
     let header = format!("{}: {}", name, latest.version);
 
     // Format the features like so:
@@ -378,15 +383,34 @@ impl LanguageServer for Backend {
 
         let hover = if let Some(name) = dependencies
             .iter()
-            .find_map(|d| d.name.contains_pos(pos).then_some(&d.name.value))
-            && let Ok(latest) = self.registry.fetch(name).await
+            .find_map(|d| d.name.contains_pos(pos).then_some(&d.name))
+            && let Ok(latest) = self.registry.fetch(&name.value).await
+        {
+            // Hovering over a dependency name
+
+            Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::PlainText,
+                    value: format_name_hover(&name.value, latest),
+                }),
+                range: Some(name.range),
+            })
+        } else if let Some((name, feature)) = dependencies.iter().find_map(|d| {
+            let feature = d
+                .features
+                .as_ref()
+                .and_then(|f| f.iter().find(|f| f.contains_pos(pos)));
+            feature.map(|f| (&d.name.value, f))
+        }) && let Ok(latest) = self.registry.fetch(name).await
+            && let Some(features) = latest.features
+            && let Some(feature_description) = features.get(&feature.value)
         {
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::PlainText,
-                    value: format_hover(name, latest),
+                    value: format_feature_hover(&feature.value, feature_description),
                 }),
-                range: None,
+                range: Some(feature.range),
             })
         } else {
             None
