@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     crates::{self, DOCS_RS_URL},
-    parse::{DEPENDENCIES_KEY, Dependency},
+    parse::{DEPENDENCIES_KEYS, Dependency},
 };
 use ropey::Rope;
 use taplo::dom;
@@ -141,33 +141,36 @@ impl Backend {
     }
 
     async fn update_manifest(&self, uri: Url) {
-        if let Some(doc) = self.documents.read().await.get(&uri).map(Rope::to_string)
+        if let Some(doc) = self.documents.read().await.get(&uri).map(Rope::to_string) {
             // NOTE: we must parse the document in a separate function as the
             // `Node` type does not implement the `Send` trait.
-            && let Ok(deps) = self.parse_document(&doc)
-        {
+            let deps = self.parse_document(&doc);
+
             self.manifests.write().await.insert(uri, deps);
         }
     }
 
-    fn parse_document(&self, doc: &str) -> Result<Vec<Dependency>, ()> {
-        let deps = taplo::parser::parse(doc)
-            .into_dom()
-            .as_table()
-            .and_then(|t| t.get(DEPENDENCIES_KEY));
-
-        if let Some(dom::node::Node::Table(deps)) = deps {
-            let deps = deps
+    fn parse_document(&self, doc: &str) -> Vec<Dependency> {
+        fn parse_dependencies(table: &dom::node::Table, doc: &str) -> Vec<Dependency> {
+            table
                 .entries()
                 .read()
                 .iter()
                 .flat_map(|(key, node)| Dependency::parse(doc, key, node))
-                .collect();
-
-            Ok(deps)
-        } else {
-            Err(())
+                .collect::<Vec<_>>()
         }
+
+        let dom = taplo::parser::parse(doc).into_dom();
+
+        let deps = DEPENDENCIES_KEYS
+            .iter()
+            .filter_map(|&key| dom.as_table().and_then(|t| t.get(key)))
+            .collect::<Vec<_>>();
+
+        deps.iter()
+            .filter_map(|deps| deps.as_table())
+            .flat_map(|table| parse_dependencies(table, doc))
+            .collect()
     }
 
     async fn generate_diagnostics(&self, dependency: &Dependency) -> Vec<Diagnostic> {

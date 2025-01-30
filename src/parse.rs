@@ -7,7 +7,7 @@ use taplo::{
 };
 use tower_lsp::lsp_types::{self, Position, Range};
 
-pub const DEPENDENCIES_KEY: &str = "dependencies";
+pub const DEPENDENCIES_KEYS: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

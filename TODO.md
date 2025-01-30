@@ -1,5 +1,5 @@
 - [x] (BASIC) Cache crates information
-- [ ] (BASIC) Support dependencies from sections other than `dependencies`
+- [x] (BASIC) Support dependencies from sections other than `dependencies`
 - [ ] (ADVANCED) Support fetching from `git` when the dependency is from `git` and not `crates.io`
 - [x] Completion for some amount of the latest versions
 - [x] Crate info on hover (Q: how to get the info? A: crates.io API, though it requires rate limiting)
@@ -7,4 +7,3 @@
 - [x] Code action to update crate version to latest
 - [x] Completion for features
 - [ ] Insightful version completion algorithm (e.g., what will happen for `2.0.0-alpha`?)
-- [ ] Parse versions in a way that would make `"1"` valid
