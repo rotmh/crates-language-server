@@ -24,3 +24,10 @@ anyhow = "1"
 indoc = "2"
 
 taplo = "0.13.2"
+
+openssl = { version = "0.10", features = ["vendored"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
