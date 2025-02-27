@@ -16,13 +16,19 @@ pub fn version_completions(latest: crates::Latest) -> Vec<CompletionItem> {
             format!("{}.{}", version.major, version.minor),
             "minor".to_owned(),
         ),
-        CompletionItem::new_simple(format!("{}", version.major), "major".to_owned()),
+        CompletionItem::new_simple(
+            format!("{}", version.major),
+            "major".to_owned(),
+        ),
     ];
 
     // this is often not the case, so it's not that bad the we are
     // inserting here (which is O(N)).
     if !(version.pre.is_empty() && version.build.is_empty()) {
-        let full = CompletionItem::new_simple(version.to_string(), "latest".to_owned());
+        let full = CompletionItem::new_simple(
+            version.to_string(),
+            "latest".to_owned(),
+        );
         comps.insert(0, full);
     }
 
@@ -38,7 +44,9 @@ pub fn features_completions(
     latest: crates::Latest,
 ) -> Vec<CompletionItem> {
     let features = dependency.features.as_ref();
-    let already_used = |name: &str| features.is_some_and(|f| f.iter().any(|f| f.value == name));
+    let already_used = |name: &str| {
+        features.is_some_and(|f| f.iter().any(|f| f.value == name))
+    };
 
     // TODO: make the completions _replace_ the current content of the feature.
 
@@ -53,7 +61,10 @@ pub fn features_completions(
     }
 }
 
-pub fn format_feature_hover(feature: &str, feature_description: &[String]) -> String {
+pub fn format_feature_hover(
+    feature: &str,
+    feature_description: &[String],
+) -> String {
     format!("{}\n\n{}", feature, format_vec(feature_description))
 }
 

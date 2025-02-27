@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     crates::{self, DOCS_RS_URL},
     format,
-    parse::{DEPENDENCIES_KEYS, Dependency},
+    parse::{self, DEPENDENCIES_KEYS, Dependency},
 };
 use ropey::Rope;
 use taplo::dom;
@@ -11,14 +11,17 @@ use tokio::sync::RwLock;
 use tower_lsp::{
     Client, LanguageServer, jsonrpc,
     lsp_types::{
-        CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, CodeActionResponse,
-        Command, CompletionItem, CompletionOptions, CompletionParams, CompletionResponse,
-        Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-        ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams, GotoDefinitionResponse,
-        Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams,
-        InitializeResult, MarkupContent, MarkupKind, MessageType, OneOf, Range, ServerCapabilities,
-        ShowDocumentParams, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
-        TextDocumentSyncKind, TextEdit, WorkDoneProgressOptions, WorkspaceEdit,
+        CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
+        CodeActionResponse, Command, CompletionItem, CompletionOptions,
+        CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+        DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+        ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
+        GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+        HoverProviderCapability, InitializeParams, InitializeResult,
+        MarkupContent, MarkupKind, MessageType, OneOf, Range,
+        ServerCapabilities, ShowDocumentParams, TextDocumentContentChangeEvent,
+        TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+        WorkDoneProgressOptions, WorkspaceEdit,
     },
 };
 use url::Url;
@@ -45,7 +48,11 @@ impl Backend {
         }
     }
 
-    async fn apply_changes(&self, uri: &Url, changes: Vec<TextDocumentContentChangeEvent>) {
+    async fn apply_changes(
+        &self,
+        uri: &Url,
+        changes: Vec<TextDocumentContentChangeEvent>,
+    ) {
         if let Some(doc) = self.documents.write().await.get_mut(uri) {
             // According to the [LSP spec]:
             //
@@ -58,12 +65,12 @@ impl Backend {
                 if let Some(range) = change.range {
                     let start = doc.line_to_byte(range.start.line as usize)
                         + range.start.character as usize;
-                    let end =
-                        doc.line_to_byte(range.end.line as usize) + range.end.character as usize;
+                    let end = doc.line_to_byte(range.end.line as usize)
+                        + range.end.character as usize;
                     doc.remove(start..end);
                     doc.insert(start, &change.text);
                 } else {
-                    // this doesn't suppose to happen
+                    // This doesn't suppose to happen
                     eprintln!("got full document in INCREMENTAL mode")
                 }
             }
@@ -71,7 +78,9 @@ impl Backend {
     }
 
     async fn update_manifest(&self, uri: Url) {
-        if let Some(doc) = self.documents.read().await.get(&uri).map(Rope::to_string) {
+        if let Some(doc) =
+            self.documents.read().await.get(&uri).map(Rope::to_string)
+        {
             // NOTE: we must parse the document in a separate function as the
             // `Node` type does not implement the `Send` trait.
             let deps = self.parse_document(&doc);
@@ -81,14 +90,14 @@ impl Backend {
     }
 
     fn parse_document(&self, doc: &str) -> Vec<Dependency> {
-        fn parse_dependencies(table: &dom::node::Table, doc: &str) -> Vec<Dependency> {
+        let parse_dependencies = |table: &dom::node::Table| {
             table
                 .entries()
                 .read()
                 .iter()
                 .flat_map(|(key, node)| Dependency::parse(doc, key, node))
                 .collect::<Vec<_>>()
-        }
+        };
 
         let dom = taplo::parser::parse(doc).into_dom();
 
@@ -99,11 +108,14 @@ impl Backend {
 
         deps.iter()
             .filter_map(|deps| deps.as_table())
-            .flat_map(|table| parse_dependencies(table, doc))
+            .flat_map(parse_dependencies)
             .collect()
     }
 
-    async fn generate_diagnostics(&self, dependency: &Dependency) -> Vec<Diagnostic> {
+    async fn generate_diagnostics(
+        &self,
+        dependency: &Dependency,
+    ) -> Vec<Diagnostic> {
         if let Ok(latest) = self.registry.fetch(&dependency.name.value).await {
             let mut diags = Vec::new();
 
@@ -111,7 +123,7 @@ impl Backend {
             if let Some(current_version) = &dependency.version
                 // We don't want to hint latest version, if the user already
                 // uses the latest version in their manifest.
-                && current_version.value.as_ref().is_none_or(|v| *v != latest.version)
+                && current_version.value.as_ref().is_none_or(|v| !v.matches(&latest.version))
             {
                 diags.push(Diagnostic {
                     range: current_version.range,
@@ -138,7 +150,7 @@ impl Backend {
                     if !available_features.contains(&&feature.value) {
                         diags.push(Diagnostic {
                             range: feature.range,
-                            severity: Some(DiagnosticSeverity::ERROR),
+                            severity: Some(DiagnosticSeverity::WARNING),
                             code: None,
                             code_description: None,
                             source: None,
@@ -172,13 +184,14 @@ impl Backend {
 
     async fn publish_diagnostics(&self, uri: Url) {
         let manifests = self.manifests.read().await;
-        let Some(dependencies) = manifests.get(&uri) else {
-            return;
-        };
+        let Some(dependencies) = manifests.get(&uri) else { return };
 
         let mut diags = Vec::new();
 
         for dependency in dependencies.iter() {
+            if !matches!(dependency.kind, parse::Kind::Registry) {
+                continue;
+            }
             diags.push(self.generate_diagnostics(dependency).await);
         }
 
@@ -187,7 +200,11 @@ impl Backend {
         self.client.publish_diagnostics(uri, diags, None).await;
     }
 
-    async fn generate_completion<F>(&self, name: &str, f: F) -> Option<CompletionResponse>
+    async fn generate_completion<F>(
+        &self,
+        name: &str,
+        f: F,
+    ) -> Option<CompletionResponse>
     where
         F: Fn(crates::Latest) -> Vec<CompletionItem>,
     {
@@ -202,7 +219,10 @@ impl Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> jsonrpc::Result<InitializeResult> {
+    async fn initialize(
+        &self,
+        _: InitializeParams,
+    ) -> jsonrpc::Result<InitializeResult> {
         Ok(InitializeResult {
             server_info: None,
             capabilities: ServerCapabilities {
@@ -225,7 +245,9 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
 
                 // We provide code action events
-                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                code_action_provider: Some(
+                    CodeActionProviderCapability::Simple(true),
+                ),
 
                 // We provide goto definition events
                 definition_provider: Some(OneOf::Left(true)),
@@ -264,30 +286,27 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
         let manifests = self.manifests.read().await;
-        let Some(dependencies) = manifests.get(&uri) else {
-            return Ok(None);
-        };
+        let Some(dependencies) = manifests.get(&uri) else { return Ok(None) };
 
-        for dependecy in dependencies.iter() {
-            if dependecy
+        for dependency in dependencies.iter() {
+            if dependency
                 .version
                 .as_ref()
                 .is_some_and(|v| v.contains_pos(pos))
             {
-                let name = &dependecy.name.value;
+                let name = &dependency.name.value;
                 let comps = self
                     .generate_completion(name, format::version_completions)
                     .await;
                 return Ok(comps);
-            } else if dependecy
+            } else if dependency
                 .features
                 .as_ref()
                 .is_some_and(|f| f.iter().any(|f| f.contains_pos(pos)))
             {
-                let name = &dependecy.name.value;
                 let comps = self
-                    .generate_completion(name, |latest| {
-                        format::features_completions(dependecy, latest)
+                    .generate_completion(&dependency.name.value, |latest| {
+                        format::features_completions(dependency, latest)
                     })
                     .await;
                 return Ok(comps);
@@ -297,17 +316,21 @@ impl LanguageServer for Backend {
         Ok(None)
     }
 
-    async fn hover(&self, params: HoverParams) -> jsonrpc::Result<Option<Hover>> {
+    async fn hover(
+        &self,
+        params: HoverParams,
+    ) -> jsonrpc::Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
         let manifests = self.manifests.read().await;
-        let Some(dependencies) = manifests.get(&uri) else {
-            return Ok(None);
-        };
+        let Some(dependencies) = manifests.get(&uri) else { return Ok(None) };
 
         let hover = if let Some(name) = dependencies
             .iter()
-            .find_map(|d| d.name.contains_pos(pos).then_some(&d.name))
+            .find(|d| d.name.contains_pos(pos))
+            .and_then(|d| {
+                matches!(d.kind, parse::Kind::Registry).then_some(&d.name)
+            })
             && let Ok(latest) = self.registry.fetch(&name.value).await
         {
             // Hovering over a dependency name
@@ -319,22 +342,31 @@ impl LanguageServer for Backend {
                 }),
                 range: Some(name.range),
             })
-        } else if let Some((name, feature)) = dependencies.iter().find_map(|d| {
-            // Hovering over some feature
+        } else if let Some((name, feature)) =
+            dependencies.iter().find_map(|d| {
+                if !matches!(d.kind, parse::Kind::Registry) {
+                    return None;
+                }
 
-            let feature = d
-                .features
-                .as_ref()
-                .and_then(|f| f.iter().find(|f| f.contains_pos(pos)));
-            feature.map(|f| (&d.name.value, f))
-        }) && let Ok(latest) = self.registry.fetch(name).await
+                // Hovering over some feature
+
+                d.features
+                    .as_ref()?
+                    .iter()
+                    .find(|f| f.contains_pos(pos))
+                    .map(|f| (&d.name.value, f))
+            })
+            && let Ok(latest) = self.registry.fetch(name).await
             && let Some(features) = latest.features
             && let Some(feature_description) = features.get(&feature.value)
         {
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::PlainText,
-                    value: format::format_feature_hover(&feature.value, feature_description),
+                    value: format::format_feature_hover(
+                        &feature.value,
+                        feature_description,
+                    ),
                 }),
                 range: Some(feature.range),
             })
@@ -352,13 +384,14 @@ impl LanguageServer for Backend {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
         let manifests = self.manifests.read().await;
-        let Some(dependencies) = manifests.get(&uri) else {
-            return Ok(None);
-        };
+        let Some(dependencies) = manifests.get(&uri) else { return Ok(None) };
 
         if let Some(name) = dependencies
             .iter()
-            .find_map(|d| d.name.contains_pos(pos).then_some(&d.name.value))
+            .find(|d| d.name.contains_pos(pos))
+            .and_then(|d| {
+                matches!(d.kind, parse::Kind::Registry).then_some(&d.name.value)
+            })
             && self.registry.is_availabe(name).await
             && let Ok(uri) = Url::parse(&format!("{DOCS_RS_URL}/{name}"))
         {
@@ -390,9 +423,7 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let Range { start, end } = params.range;
         let manifests = self.manifests.read().await;
-        let Some(dependencies) = manifests.get(&uri) else {
-            return Ok(None);
-        };
+        let Some(dependencies) = manifests.get(&uri) else { return Ok(None) };
 
         let dependency = dependencies.iter().find(|d| {
             d.version
@@ -400,18 +431,27 @@ impl LanguageServer for Backend {
                 .is_some_and(|v| v.contains_pos(start) || v.contains_pos(end))
         });
 
-        if let Some(dependency) = dependency
-            && let Ok(latest) = self.registry.fetch(&dependency.name.value).await
+        if dependency.is_some_and(|d| !matches!(d.kind, parse::Kind::Registry))
         {
-            let current_version = dependency.version.as_ref().and_then(|v| v.value.as_ref());
+            return Ok(None);
+        }
+
+        if let Some(dependency) = dependency
+            && let Ok(latest) =
+                self.registry.fetch(&dependency.name.value).await
+        {
+            let current_version =
+                dependency.version.as_ref().and_then(|v| v.value.as_ref());
             // We don't want to suggest the LATEST_VERSION code action if
             // the user already uses the latest version in their manifest.
-            if current_version.is_none_or(|v| *v != latest.version) {
+            if current_version.is_none_or(|v| !v.matches(&latest.version)) {
                 let command = CodeActionOrCommand::Command(Command::new(
                     "Latest version".to_owned(),
                     code_action::LATEST_VERSION.to_owned(),
                     Some(vec![
-                        serde_json::Value::String(dependency.name.value.to_owned()),
+                        serde_json::Value::String(
+                            dependency.name.value.to_owned(),
+                        ),
                         serde_json::Value::String(uri.into()),
                     ]),
                 ));
@@ -427,18 +467,24 @@ impl LanguageServer for Backend {
         params: ExecuteCommandParams,
     ) -> jsonrpc::Result<Option<serde_json::Value>> {
         if params.command == code_action::LATEST_VERSION
-            && let Some(serde_json::Value::String(name)) = params.arguments.first()
-            && let Some(serde_json::Value::String(uri)) = params.arguments.get(1)
+            && let Some(serde_json::Value::String(name)) =
+                params.arguments.first()
+            && let Some(serde_json::Value::String(uri)) =
+                params.arguments.get(1)
             && let Ok(uri) = Url::parse(uri)
-            && let Some(range) = self.manifests.read().await.get(&uri).and_then(|deps| {
-                deps.iter()
-                    .find(|d| &d.name.value == name)
-                    .and_then(|d| d.version.as_ref().map(|v| v.range))
-            })
+            && let Some(range) =
+                self.manifests.read().await.get(&uri).and_then(|deps| {
+                    deps.iter()
+                        .find(|d| &d.name.value == name)
+                        .and_then(|d| d.version.as_ref().map(|v| v.range))
+                })
             && let Ok(latest) = self.registry.fetch(name).await
         {
-            let change = TextEdit::new(range, format!("\"{}\"", latest.version));
-            let changes = WorkspaceEdit::new(std::iter::once((uri, vec![change])).collect());
+            let change =
+                TextEdit::new(range, format!("\"{}\"", latest.version));
+            let changes = WorkspaceEdit::new(
+                std::iter::once((uri, vec![change])).collect(),
+            );
             let _ = self.client.apply_edit(changes).await;
             Ok(None)
         } else {

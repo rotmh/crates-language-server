@@ -1,9 +1,6 @@
-#![feature(impl_trait_in_bindings)]
-#![feature(duration_constructors)]
-#![feature(let_chains)]
-#![feature(if_let_guard)]
+#![feature(duration_constructors, let_chains, if_let_guard)]
 
-pub mod crates;
-pub mod format;
+mod crates;
+mod format;
 pub mod ls;
-pub mod parse;
+mod parse;

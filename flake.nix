@@ -24,6 +24,13 @@
           inherit system overlays;
         };
       in {
+        devShells.default = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            gcc
+            gnumake
+            perl
+          ];
+        };
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "crates-language-server";
           version = "0.1.0";

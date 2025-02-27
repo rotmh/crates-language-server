@@ -1,0 +1,9 @@
+max_width = 80
+format_code_in_doc_comments = true
+wrap_comments = true
+format_strings = true
+single_line_let_else_max_width = 80
+single_line_if_else_max_width = 80
+struct_lit_width = 80
+array_width = 80
+attr_fn_like_width = 80

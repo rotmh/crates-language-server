@@ -43,7 +43,8 @@ impl RegistryCache {
 
     /// Fetch description only if 1 minute passed since last API request.
     ///
-    /// This rate limiting is required because it's one of [`crates.io`'s limits]:
+    /// This rate limiting is required because it's one of [`crates.io`'s
+    /// limits]:
     ///
     /// * "A maximum of 1 request per second"
     ///
@@ -82,14 +83,14 @@ impl RegistryCache {
     }
 
     async fn fetch_endpoint(&self, url: &str) -> Result<Response> {
-        let res = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|_| Error::Request {
-                url: url.to_owned(),
-            })?;
+        let res =
+            self.client
+                .get(url)
+                .send()
+                .await
+                .map_err(|_| Error::Request {
+                    url: url.to_owned(),
+                })?;
 
         res.status()
             .is_success()
@@ -143,9 +144,10 @@ impl RegistryCache {
             name: name.to_owned(),
         })?;
 
-        let version = semver::Version::parse(&latest.vers).map_err(|_| Error::Parse {
-            name: name.to_owned(),
-        })?;
+        let version =
+            semver::Version::parse(&latest.vers).map_err(|_| Error::Parse {
+                name: name.to_owned(),
+            })?;
         let features = if latest.v == 2 {
             latest.features2.clone()
         } else {
@@ -194,9 +196,10 @@ impl Index {
         let mut entries = Vec::with_capacity(json_entries.lines().count());
 
         for line in json_entries.lines() {
-            let entry = serde_json::from_str(line).map_err(|_| Error::Parse {
-                name: name.to_owned(),
-            })?;
+            let entry =
+                serde_json::from_str(line).map_err(|_| Error::Parse {
+                    name: name.to_owned(),
+                })?;
             entries.push(entry);
         }
 
@@ -240,10 +243,10 @@ struct Entry {
     ///
     /// The current values are:
     ///
-    /// * 1: The schema as documented here, not including newer additions.
-    ///      This is honored in Rust version 1.51 and newer.
-    /// * 2: The addition of the `features2` field.
-    ///      This is honored in Rust version 1.60 and newer.
+    /// * 1: The schema as documented here, not including newer additions. This
+    ///   is honored in Rust version 1.51 and newer.
+    /// * 2: The addition of the `features2` field. This is honored in Rust
+    ///   version 1.60 and newer.
     #[serde(default = "return_1")]
     pub v: u32,
     /// This optional field contains features with new, extended syntax.
@@ -265,7 +268,8 @@ struct Entry {
     /// those older versions do not support other registries.
     pub features2: Option<HashMap<String, Vec<String>>>,
     /// The minimal supported Rust version (optional)
-    /// This must be a valid version requirement without an operator (e.g. no `=`)
+    /// This must be a valid version requirement without an operator (e.g. no
+    /// `=`)
     pub rust_version: Option<String>,
 }
 
