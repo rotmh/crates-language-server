@@ -337,7 +337,7 @@ impl LanguageServer for Backend {
 
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::PlainText,
+                    kind: MarkupKind::Markdown,
                     value: format::format_name_hover(&name.value, latest),
                 }),
                 range: Some(name.range),
@@ -362,7 +362,7 @@ impl LanguageServer for Backend {
         {
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::PlainText,
+                    kind: MarkupKind::Markdown,
                     value: format::format_feature_hover(
                         &feature.value,
                         feature_description,

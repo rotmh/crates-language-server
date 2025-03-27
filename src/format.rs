@@ -36,7 +36,11 @@ pub fn version_completions(latest: crates::Latest) -> Vec<CompletionItem> {
 }
 
 pub fn format_vec(vec: &[String]) -> String {
-    format!("[ {} ]", vec.join(", "))
+    if vec.is_empty() {
+        "[ ]".to_string()
+    } else {
+        format!("[ {} ]", vec.join(", "))
+    }
 }
 
 pub fn features_completions(
@@ -65,15 +69,16 @@ pub fn format_feature_hover(
     feature: &str,
     feature_description: &[String],
 ) -> String {
-    format!("{}\n\n{}", feature, format_vec(feature_description))
+    format!(
+        "{}\n\n---\n\n## Enables\n\n{}",
+        feature,
+        format_vec(feature_description)
+    )
 }
 
 pub fn format_name_hover(name: &str, latest: crates::Latest) -> String {
     let header = format!("{}: {}", name, latest.version);
 
-    // Format the features like so:
-    //
-    //   [ feat1, feat2, feat3 ]
     let features = latest
         .features
         .as_ref()
@@ -84,9 +89,11 @@ pub fn format_name_hover(name: &str, latest: crates::Latest) -> String {
         .map(|f| f.join(", "));
     let features = features
         .filter(|f| !f.is_empty())
-        .map(|f| format!("[ {} ]", f));
+        .map(|f| format!("---\n\n## Available Features\n\n[ {} ]", f));
 
-    [Some(header), features, latest.description]
+    let description = latest.description.map(|d| format!("---\n\n{}", d));
+
+    [Some(header), description, features]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
