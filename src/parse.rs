@@ -8,7 +8,6 @@ use taplo::{
     rowan::TextRange,
 };
 use tower_lsp::lsp_types::{self, Position, Range};
-use url::Url;
 
 pub const DEPENDENCIES_KEYS: &[&str] =
     &["dependencies", "dev-dependencies", "build-dependencies"];
@@ -34,8 +33,8 @@ pub struct LocalKind {
 
 #[derive(Debug)]
 pub struct GitKind {
-    url: Span<Url>,
-    specifier: GitSpecifier,
+    url: Span<String>,
+    specifier: Option<GitSpecifier>,
 }
 
 #[derive(Debug)]
@@ -82,7 +81,7 @@ impl Dependency {
 
         let url = Span::parse(
             table.get(Self::GIT_KEY)?.as_str()?,
-            |s| Url::parse(s).ok(),
+            |s| Some(s.to_owned()),
             s,
         )?;
 
@@ -97,7 +96,7 @@ impl Dependency {
             (Self::TAG_KEY, GitSpecifier::Tag),
         ]
         .iter()
-        .find_map(|(k, v)| parse_specifier(*k, v))?;
+        .find_map(|(k, v)| parse_specifier(*k, v));
 
         Some(GitKind { url, specifier })
     }
@@ -230,19 +229,28 @@ mod tests {
         // NOTE: the positions are zero-indexed and the end is exclusive
 
         // basic
-        assert_eq!(range_to_positions(s, 0..2), lsp_types::Range {
-            start: lsp_types::Position::new(0, 0),
-            end: lsp_types::Position::new(0, 2),
-        });
+        assert_eq!(
+            range_to_positions(s, 0..2),
+            lsp_types::Range {
+                start: lsp_types::Position::new(0, 0),
+                end: lsp_types::Position::new(0, 2),
+            }
+        );
         // multiline
-        assert_eq!(range_to_positions(s, 6..10), lsp_types::Range {
-            start: lsp_types::Position::new(0, 6),
-            end: lsp_types::Position::new(1, 1),
-        });
+        assert_eq!(
+            range_to_positions(s, 6..10),
+            lsp_types::Range {
+                start: lsp_types::Position::new(0, 6),
+                end: lsp_types::Position::new(1, 1),
+            }
+        );
         // to line end
-        assert_eq!(range_to_positions(s, 13..14), lsp_types::Range {
-            start: lsp_types::Position::new(2, 0),
-            end: lsp_types::Position::new(2, 1),
-        });
+        assert_eq!(
+            range_to_positions(s, 13..14),
+            lsp_types::Range {
+                start: lsp_types::Position::new(2, 0),
+                end: lsp_types::Position::new(2, 1),
+            }
+        );
     }
 }

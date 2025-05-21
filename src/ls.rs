@@ -189,10 +189,9 @@ impl Backend {
         let mut diags = Vec::new();
 
         for dependency in dependencies.iter() {
-            if !matches!(dependency.kind, parse::Kind::Registry) {
-                continue;
+            if matches!(dependency.kind, parse::Kind::Registry) {
+                diags.push(self.generate_diagnostics(dependency).await);
             }
-            diags.push(self.generate_diagnostics(dependency).await);
         }
 
         let diags = diags.into_iter().flatten().collect();
